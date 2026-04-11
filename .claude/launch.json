@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "etrn-dev",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "export PATH=/Users/aletinaleksandr/local/node/bin:$PATH && npx vite --host --port 5173"],
+      "port": 5173
+    }
+  ]
+}
