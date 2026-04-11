@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PATH=\"$HOME/local/node/bin:$PATH\")",
+      "Bash(node /tmp/gen-icons.js)",
+      "Bash(npx vite:*)",
+      "Bash(npm install:*)",
+      "mcp__Claude_Preview__preview_start",
+      "WebFetch(domain:www.etrn.app)",
+      "WebSearch",
+      "WebFetch(domain:sbis-infosystem.ru)",
+      "WebFetch(domain:astral.ru)",
+      "WebFetch(domain:kontur.ru)",
+      "WebFetch(domain:saby.ru)",
+      "WebFetch(domain:www.tadviser.ru)",
+      "WebFetch(domain:cryptopro.ru)",
+      "WebFetch(domain:dss.cryptopro.ru)",
+      "WebFetch(domain:repo.paycontrol.org)",
+      "Bash(pandoc \"/Users/aletinaleksandr/Downloads/Архив/СБИС/API.docx\" -t plain --wrap=none)",
+      "Bash(pandoc \"/Users/aletinaleksandr/Downloads/Архив/СБЕРКОРУС/АПИ.docx\" -t plain --wrap=none)",
+      "Bash(pandoc \"/Users/aletinaleksandr/Downloads/Архив/КОНТУР/АПИ .docx\" -t plain --wrap=none)",
+      "Bash(pandoc \"/Users/aletinaleksandr/Downloads/Архив/Калуга Астрал/API ЭПД \\(ЭТрН\\).docx\" -t plain --wrap=none)",
+      "Bash(pandoc \"/Users/aletinaleksandr/Downloads/Архив/Калуга Астрал/API ЭДО \\(Доки\\).docx\" -t plain --wrap=none)",
+      "Bash(pandoc \"/Users/aletinaleksandr/Downloads/Архив/Калуга Астрал/Описание API ЭПД.docx\" -t plain --wrap=none)",
+      "Bash(python3 -c ':*)",
+      "Bash(export PATH=\"/Users/aletinaleksandr/local/node/bin:$PATH\")",
+      "Bash(npx tsc:*)",
+      "Bash(ls src/pages/*.tsx src/components/layout/*.tsx src/components/ui/Toast.tsx src/components/ui/Input.tsx)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit -m ':*)"
+    ]
+  }
+}
