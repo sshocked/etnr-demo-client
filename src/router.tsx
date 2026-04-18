@@ -15,6 +15,7 @@ import ProfilePage from './pages/ProfilePage'
 import PaymentPage from './pages/PaymentPage'
 import EdoConnectPage from './pages/EdoConnectPage'
 import McdLandingPage from './pages/McdLandingPage'
+import McdInvitePage from './pages/McdInvitePage'
 import CertIssuancePage from './pages/CertIssuancePage'
 import PinSetupPage from './pages/PinSetupPage'
 import PinLoginPage from './pages/PinLoginPage'
@@ -33,6 +34,7 @@ export const router = createHashRouter([
   { path: '/pin-login', element: <PinLoginPage /> },
   { path: '/onboarding', element: <AuthGuard><OnboardingPage /></AuthGuard> },
   { path: '/mcd', element: <McdLandingPage /> },
+  { path: '/mcd/invite', element: <McdInvitePage /> },
   { path: '/cert-issue', element: <CertIssuancePage /> },
   // Protected routes (require auth + onboarding)
   {

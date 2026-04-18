@@ -226,7 +226,14 @@ export default function ProfilePage() {
                   {mcd.validUntil && <p>Действительна до: {formatDate(mcd.validUntil)}</p>}
                   <div className="flex flex-wrap gap-1.5 mt-1.5">
                     {mcd.powers.map(p => (
-                      <span key={p} className="px-2 py-0.5 bg-brand-50 text-brand-700 rounded text-xs font-medium">{p}</span>
+                      <span
+                        key={p.code}
+                        title={p.name}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-brand-50 text-brand-700 rounded text-xs font-medium"
+                      >
+                        <span className="font-mono">{p.code}</span>
+                        <span>{p.name.length > 28 ? p.name.slice(0, 26) + '…' : p.name}</span>
+                      </span>
                     ))}
                   </div>
                 </div>

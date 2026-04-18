@@ -31,7 +31,12 @@ export const defaultMcds: Mcd[] = [
     },
     trustedPerson: 'Иванов Сергей Петрович',
     validUntil: '2027-01-15',
-    powers: ['Подписание ЭТрН', 'Подписание ЭПД'],
+    powers: [
+      { code: '02.08', name: 'Подписание электронных транспортных накладных (ЭТрН)' },
+      { code: '02.09', name: 'Подписание заказ-нарядов (ЭЗЗ)' },
+    ],
+    fileName: 'МЧД_TRANSLOGISTIC_2026.xml',
+    uploadedAt: '2026-01-15T10:00:00Z',
   },
   {
     status: 'linked',
@@ -42,6 +47,10 @@ export const defaultMcds: Mcd[] = [
     },
     trustedPerson: 'Иванов Сергей Петрович',
     validUntil: '2026-09-30',
-    powers: ['Подписание ЭТрН'],
+    powers: [
+      { code: '02.08', name: 'Подписание электронных транспортных накладных (ЭТрН)' },
+    ],
+    fileName: 'МЧД_AGROTRADE_2026.xml',
+    uploadedAt: '2026-02-20T12:30:00Z',
   },
 ]

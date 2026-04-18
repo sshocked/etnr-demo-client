@@ -7,11 +7,12 @@ import Button from '../components/ui/Button'
 import { SkeletonCard } from '../components/ui/Skeleton'
 import Skeleton from '../components/ui/Skeleton'
 import { getItem, setItem, simulateDelay } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus, STATUS_LABELS, DOC_TYPE_LABELS, EDO_OPERATORS } from '../lib/constants'
+import { STORAGE_KEYS, DocumentStatus, STATUS_LABELS, DOC_TYPE_LABELS, EDO_OPERATORS, DOC_TYPE_REQUIRED_POWER, EKP_CATALOG } from '../lib/constants'
 import type { DocRecord, TitleStatus, Mcd, Certificate } from '../lib/constants'
 import { formatDate, formatDateTime, formatMoney, cn } from '../lib/utils'
 import { useToast } from '../components/ui/Toast'
 import MockPdfPreview from '../components/documents/MockPdfPreview'
+import { findMcdForPower } from '../lib/mockMcdParser'
 
 const badgeVariant: Record<DocumentStatus, 'info' | 'warning' | 'success' | 'error'> = {
   [DocumentStatus.NEED_SIGN]: 'info',
@@ -107,45 +108,52 @@ export default function DocumentDetailPage() {
     { key: 'files' as const, label: `Файлы (${doc.files.length})` },
   ]
 
+  // Match an MCD to the CURRENT document: same principal INN + required power code.
+  const requiredPowerCode = DOC_TYPE_REQUIRED_POWER[doc.type]
+  const requiredPowerName = EKP_CATALOG[requiredPowerCode] || requiredPowerCode
+  const allMcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
+  const matchingMcd = findMcdForPower(allMcds, requiredPowerCode, doc.sender.inn)
+
   // Validate MCD and certificate before signing
   const validateBeforeSigning = (): boolean => {
     const cert = getItem<Certificate>(STORAGE_KEYS.CERTIFICATE)
-    if (!cert) {
-      setShowCertError(true)
-      setShowActions(false)
-      return false
-    }
-    if (cert.status !== 'active') {
+    if (!cert || cert.status !== 'active') {
       setShowCertError(true)
       setShowActions(false)
       return false
     }
 
-    const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
-    if (mcds.length === 0 || mcds.every(m => m.status === 'none')) {
-      setMcdErrorMessage('МЧД не привязана. Для подписания документов необходима действующая машиночитаемая доверенность.')
-      setShowMcdError(true)
-      setShowActions(false)
-      return false
-    }
-    // Check if at least one valid (linked) MCD exists
-    const hasValid = mcds.some(m => m.status === 'linked')
-    if (!hasValid) {
-      // Pick the most relevant error
-      if (mcds.some(m => m.status === 'expired')) {
-        setMcdErrorMessage('Срок действия всех МЧД истёк. Обновите доверенность для продолжения работы с документами.')
-      } else if (mcds.some(m => m.status === 'invalid')) {
-        setMcdErrorMessage('Все МЧД недействительны. Загрузите корректную машиночитаемую доверенность.')
-      } else if (mcds.some(m => m.status === 'insufficient')) {
-        setMcdErrorMessage('Недостаточно полномочий в МЧД. Доверенности не содержат прав на подписание транспортных документов.')
+    // Happy path: есть подходящая МЧД
+    if (matchingMcd) return true
+
+    // Подбираем наиболее точное сообщение об ошибке
+    let message: string
+    if (allMcds.length === 0) {
+      message = `Для подписания ЭТрН от «${doc.sender.name}» нужна МЧД с полномочием ${requiredPowerCode} (${requiredPowerName}). Запросите доверенность у компании.`
+    } else {
+      const mcdFromSender = allMcds.filter(m => m.principal.inn === doc.sender.inn)
+      if (mcdFromSender.length === 0) {
+        message = `У вас нет МЧД от «${doc.sender.name}» (ИНН ${doc.sender.inn}). Запросите доверенность у этой компании.`
       } else {
-        setMcdErrorMessage('МЧД не привязана. Для подписания документов необходима действующая машиночитаемая доверенность.')
+        const linked = mcdFromSender.find(m => m.status === 'linked')
+        if (!linked) {
+          const expired = mcdFromSender.find(m => m.status === 'expired' || (m.validUntil && new Date(m.validUntil) < new Date()))
+          message = expired
+            ? `МЧД от «${doc.sender.name}» ${expired.validUntil ? `просрочена (до ${formatDate(expired.validUntil)})` : 'просрочена'}. Запросите у компании новую доверенность.`
+            : `МЧД от «${doc.sender.name}» недействительна. Запросите у компании новую доверенность.`
+        } else if (!linked.powers.some(p => p.code === requiredPowerCode)) {
+          const codes = linked.powers.map(p => p.code).join(', ')
+          message = `В МЧД от «${doc.sender.name}» нет полномочия ${requiredPowerCode} (${requiredPowerName}). Доступные полномочия: ${codes || '—'}.`
+        } else {
+          message = `МЧД от «${doc.sender.name}» не подходит для подписания этого документа.`
+        }
       }
-      setShowMcdError(true)
-      setShowActions(false)
-      return false
     }
-    return true
+
+    setMcdErrorMessage(message)
+    setShowMcdError(true)
+    setShowActions(false)
+    return false
   }
 
   const handleOpenActions = () => {
@@ -154,9 +162,11 @@ export default function DocumentDetailPage() {
     }
   }
 
+  const mcdParam = matchingMcd?.number ? `&mcd=${encodeURIComponent(matchingMcd.number)}` : ''
+
   const handleSign = () => {
     setShowActions(false)
-    navigate(`/documents/${doc.id}/sign?mode=sign`)
+    navigate(`/documents/${doc.id}/sign?mode=sign${mcdParam}`)
   }
 
   const handleSignWithReservations = () => {
@@ -175,7 +185,7 @@ export default function DocumentDetailPage() {
       return
     }
     setShowReservations(false)
-    navigate(`/documents/${doc.id}/sign?mode=reservations&text=${encodeURIComponent(reservationsText)}`)
+    navigate(`/documents/${doc.id}/sign?mode=reservations&text=${encodeURIComponent(reservationsText)}${mcdParam}`)
   }
 
   const submitRefuse = () => {
@@ -184,7 +194,7 @@ export default function DocumentDetailPage() {
       return
     }
     setShowRefuse(false)
-    navigate(`/documents/${doc.id}/sign?mode=refuse&reason=${encodeURIComponent(refuseReason)}`)
+    navigate(`/documents/${doc.id}/sign?mode=refuse&reason=${encodeURIComponent(refuseReason)}${mcdParam}`)
   }
 
   return (
@@ -397,7 +407,38 @@ export default function DocumentDetailPage() {
       </div>
 
       {/* Sticky CTA */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-t border-gray-100 dark:border-gray-700/50 pb-safe">
+      <div className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-t border-gray-100 dark:border-gray-700/50 pb-safe">
+        {/* MCD matching notice — only for docs that await signing */}
+        {doc.status === DocumentStatus.NEED_SIGN && (
+          <div className="px-4 pt-3">
+            {matchingMcd ? (
+              <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50">
+                <Shield className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-green-800 dark:text-green-300">
+                    Подписание по МЧД {matchingMcd.number}
+                  </p>
+                  <p className="text-xs text-green-700 dark:text-green-400 truncate">
+                    От имени {matchingMcd.principal.companyName} · полномочие {requiredPowerCode}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50">
+                <Shield className="h-4 w-4 text-red-600 mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-red-800 dark:text-red-300">
+                    Нет подходящей МЧД
+                  </p>
+                  <p className="text-xs text-red-700 dark:text-red-400 truncate">
+                    Требуется МЧД от {doc.sender.name} с полномочием {requiredPowerCode}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="p-4">
         {doc.status === DocumentStatus.NEED_SIGN && (
           <div className="flex gap-2">
             <Button fullWidth size="lg" onClick={handleOpenActions}>
@@ -432,6 +473,7 @@ export default function DocumentDetailPage() {
             Ожидает подписания
           </Button>
         )}
+        </div>
       </div>
 
       {/* Signing action sheet */}

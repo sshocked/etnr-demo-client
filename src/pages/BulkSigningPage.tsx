@@ -4,9 +4,10 @@ import { CheckCircle, XCircle, Loader2, FileText, RotateCcw } from 'lucide-react
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import { getItem, setItem, shouldSimulateError } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus } from '../lib/constants'
-import type { DocRecord, ActivityLogEntry } from '../lib/constants'
+import { STORAGE_KEYS, DocumentStatus, DOC_TYPE_REQUIRED_POWER } from '../lib/constants'
+import type { DocRecord, ActivityLogEntry, Mcd } from '../lib/constants'
 import { generateId, cn } from '../lib/utils'
+import { findMcdForPower } from '../lib/mockMcdParser'
 
 type StepStatus = 'pending' | 'active' | 'done' | 'error'
 
@@ -16,6 +17,9 @@ interface DocSignState {
   senderName: string
   steps: StepStatus[]
   status: 'waiting' | 'processing' | 'success' | 'error'
+  mcdNumber?: string
+  mcdPrincipal?: string
+  errorReason?: string
 }
 
 const STEP_LABELS = ['Проверка', 'Подпись', 'Отправка']
@@ -34,16 +38,22 @@ export default function BulkSigningPage() {
   // Initialize doc states from localStorage
   useEffect(() => {
     const allDocs = getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? []
+    const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
     const states: DocSignState[] = ids
       .map(id => {
         const doc = allDocs.find(d => d.id === id)
         if (!doc) return null
+        const requiredCode = DOC_TYPE_REQUIRED_POWER[doc.type]
+        const mcd = findMcdForPower(mcds, requiredCode, doc.sender.inn)
         return {
           id: doc.id,
           number: doc.number,
           senderName: doc.sender.name,
           steps: ['pending', 'pending', 'pending'] as StepStatus[],
           status: 'waiting' as const,
+          mcdNumber: mcd?.number ?? undefined,
+          mcdPrincipal: mcd?.principal.companyName,
+          errorReason: mcd ? undefined : `Нет МЧД от «${doc.sender.name}» с полномочием ${requiredCode}`,
         }
       })
       .filter((s): s is NonNullable<typeof s> & DocSignState => s !== null)
@@ -64,6 +74,17 @@ export default function BulkSigningPage() {
     for (let docIdx = 0; docIdx < currentStates.length; docIdx++) {
       const docState = currentStates[docIdx]
       if (docState.status === 'success') continue // skip already successful (retry scenario)
+
+      // Нет подходящей МЧД — сразу помечаем ошибкой без имитации подписания
+      if (!docState.mcdNumber) {
+        currentStates = currentStates.map((s, i) =>
+          i === docIdx
+            ? { ...s, status: 'error' as const, steps: ['error', 'pending', 'pending'] as StepStatus[] }
+            : s
+        )
+        setDocStates([...currentStates])
+        continue
+      }
 
       // Mark as processing
       currentStates = currentStates.map((s, i) =>
@@ -123,7 +144,7 @@ export default function BulkSigningPage() {
               timestamp: now,
               action: 'signed' as const,
               actor: 'Вы',
-              description: 'Документ подписан электронной подписью (массовое подписание)',
+              description: `Документ подписан электронной подписью (массовое подписание, МЧД ${docState.mcdNumber} от ${docState.mcdPrincipal})`,
             }],
           }
         })
@@ -280,7 +301,12 @@ export default function BulkSigningPage() {
                 )}
 
                 {ds.status === 'error' && (
-                  <p className="text-xs text-red-600 mt-1">Не удалось подписать документ</p>
+                  <p className="text-xs text-red-600 mt-1">{ds.errorReason ?? 'Не удалось подписать документ'}</p>
+                )}
+                {ds.status !== 'error' && ds.mcdNumber && (
+                  <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                    МЧД {ds.mcdNumber} · {ds.mcdPrincipal}
+                  </p>
                 )}
               </div>
             </div>

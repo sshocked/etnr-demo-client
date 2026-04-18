@@ -181,13 +181,38 @@ export interface Subscription {
   limit: number | null
 }
 
+export interface McdPower {
+  code: string          // код из ЕКП, напр. "02.08"
+  name: string          // человекочитаемое наименование
+}
+
 export interface Mcd {
   status: McdStatus
   number: string | null
   principal: { companyName: string; inn: string }
   trustedPerson: string
   validUntil: string | null
-  powers: string[]
+  powers: McdPower[]
+  fileName?: string
+  uploadedAt?: string
+}
+
+// Справочник ЕКП (Единый классификатор полномочий ФНС) — стартовый набор
+// под транспортный ЭДО. Будет дополняться по мере появления реальных XML-МЧД.
+export const EKP_CATALOG: Record<string, string> = {
+  '01.01': 'Подписание УПД',
+  '01.02': 'Подписание счетов-фактур',
+  '02.08': 'Подписание электронных транспортных накладных (ЭТрН)',
+  '02.09': 'Подписание заказ-нарядов (ЭЗЗ)',
+  '02.10': 'Подписание товарно-транспортных накладных (ТТН)',
+  '04.01': 'Подписание актов выполненных работ',
+  '06.01': 'Просмотр электронных документов',
+}
+
+// Маппинг типа документа → требуемый код полномочия из ЕКП.
+// Используется при проверке МЧД перед подписанием.
+export const DOC_TYPE_REQUIRED_POWER: Record<DocumentType, string> = {
+  trn: '02.08',
 }
 
 export interface ActivityLogEntry {

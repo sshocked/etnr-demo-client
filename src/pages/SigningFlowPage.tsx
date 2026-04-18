@@ -5,7 +5,7 @@ import Button from '../components/ui/Button'
 import ProgressSteps from '../components/ui/ProgressSteps'
 import { getItem, setItem, shouldSimulateError } from '../lib/storage'
 import { STORAGE_KEYS, DocumentStatus } from '../lib/constants'
-import type { DocRecord, ActivityLogEntry, GeoLocation } from '../lib/constants'
+import type { DocRecord, ActivityLogEntry, GeoLocation, Mcd } from '../lib/constants'
 import { generateId } from '../lib/utils'
 
 const MOCK_ADDRESS = '\u041c\u043e\u0441\u043a\u0432\u0430, \u0443\u043b. \u0422\u0432\u0435\u0440\u0441\u043a\u0430\u044f, 12'
@@ -39,6 +39,7 @@ export default function SigningFlowPage() {
   const mode = (searchParams.get('mode') || 'sign') as SignMode
   const reservationsText = searchParams.get('text') || ''
   const refuseReason = searchParams.get('reason') || ''
+  const mcdNumber = searchParams.get('mcd') || ''
 
   const steps = stepsForMode[mode] || stepsForMode.sign
 
@@ -77,6 +78,15 @@ export default function SigningFlowPage() {
         const docs = getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? []
         const now = new Date().toISOString()
 
+        // Найти МЧД, по которой подписывается документ (для записи в историю).
+        const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
+        const usedMcd = mcdNumber ? mcds.find(m => m.number === mcdNumber) : undefined
+        const mcdSuffix = usedMcd
+          ? ` (по МЧД ${usedMcd.number} от ${usedMcd.principal.companyName})`
+          : mcdNumber
+            ? ` (по МЧД ${mcdNumber})`
+            : ''
+
         let newStatus: DocumentStatus
         let historyAction: string
         let historyDesc: string
@@ -90,12 +100,12 @@ export default function SigningFlowPage() {
         } else if (mode === 'reservations') {
           newStatus = DocumentStatus.SIGNED_WITH_RESERVATIONS
           historyAction = 'signed'
-          historyDesc = `Подписан с оговоркой: ${reservationsText}`
+          historyDesc = `Подписан с оговоркой: ${reservationsText}${mcdSuffix}`
           activityMsg = 'подписан с оговоркой'
         } else {
           newStatus = DocumentStatus.SIGNED
           historyAction = 'signed'
-          historyDesc = 'Документ подписан электронной подписью'
+          historyDesc = `Документ подписан электронной подписью${mcdSuffix}`
           activityMsg = 'подписан'
         }
 
@@ -151,7 +161,7 @@ export default function SigningFlowPage() {
 
     const timer = setTimeout(() => advance(0), 500)
     return () => clearTimeout(timer)
-  }, [id, done, error, mode, reservationsText, refuseReason])
+  }, [id, done, error, mode, reservationsText, refuseReason, mcdNumber])
 
   const handleRetry = () => {
     setError(false)
@@ -226,6 +236,11 @@ export default function SigningFlowPage() {
               {progressLabels[mode]?.[currentStep] || 'Обработка...'}
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">Пожалуйста, подождите</p>
+            {mcdNumber && mode !== 'refuse' && (
+              <div className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-50 dark:bg-brand-900/30 text-xs">
+                <span className="text-brand-700 dark:text-brand-300 font-medium">Подписание по МЧД {mcdNumber}</span>
+              </div>
+            )}
             <div className="mt-4 flex items-center justify-center gap-1.5 text-xs">
               <MapPin className="h-3.5 w-3.5" />
               {geoStatus === 'pending' && <span className="text-gray-400 dark:text-gray-500">Определение местоположения...</span>}
