@@ -3,10 +3,12 @@ import type { UserProfile, Subscription, Mcd } from '../lib/constants'
 export const defaultUser: UserProfile = {
   id: 'user-001',
   phone: '79161234567',
-  name: 'Иванов Сергей Петрович',
-  company: 'ООО "ТрансЛогистик"',
+  name: 'Смирнов Алексей Николаевич',
+  email: 'smirnov@translogistic.ru',
+  company: 'ООО «ТрансЛогистик»',
   inn: '7712345678',
-  role: 'employee',
+  kind: 'ul',
+  ogrn: '1027700123456',
   onboardingCompleted: true,
 }
 

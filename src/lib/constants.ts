@@ -158,13 +158,17 @@ export interface DocRecord {
   signLocation?: GeoLocation
 }
 
+export type UserKind = 'ul' | 'ip' | 'fl'  // юр.лицо / ИП / физлицо
+
 export interface UserProfile {
   id: string
   phone: string
-  name: string
-  company: string
-  inn: string
-  role: 'driver' | 'employee'
+  name: string                          // ФИО физлица (подписанта)
+  email: string                         // личный email (может отличаться от корпоративного)
+  inn: string                           // ИНН пользователя (10 или 12 цифр)
+  kind: UserKind                        // тип: юрлицо / ИП / физлицо
+  company: string                       // название: для ФЛ = ФИО; для ИП = "ИП Иванов И.И."; для ЮЛ = название ООО
+  ogrn?: string                         // ОГРН / ОГРНИП
   onboardingCompleted: boolean
   edoOperators?: EdoOperator[]
   certificate?: Certificate

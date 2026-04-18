@@ -31,7 +31,14 @@
       "Bash(git rm:*)",
       "Bash(git commit -m ':*)",
       "Bash(git remote:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(npm view:*)",
+      "Bash(BASE_URL=\"/etrn/\" npm run build)",
+      "Bash(npx gh-pages:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python3)",
+      "Bash(npm run *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

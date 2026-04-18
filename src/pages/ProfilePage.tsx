@@ -97,9 +97,14 @@ export default function ProfilePage() {
           {user?.inn && (
             <span className="px-2.5 py-1 bg-white/15 rounded-lg">ИНН: {user.inn}</span>
           )}
-          <span className="px-2.5 py-1 bg-white/15 rounded-lg">
-            {user?.role === 'employee' ? 'Сотрудник' : 'Водитель'}
-          </span>
+          {user?.kind && (
+            <span className="px-2.5 py-1 bg-white/15 rounded-lg">
+              {user.kind === 'ul' ? 'Юридическое лицо' : user.kind === 'ip' ? 'ИП' : 'Физическое лицо'}
+            </span>
+          )}
+          {user?.email && (
+            <span className="px-2.5 py-1 bg-white/15 rounded-lg truncate max-w-[200px]">{user.email}</span>
+          )}
           {user?.edoOperators?.length ? (
             <span className="px-2.5 py-1 bg-white/15 rounded-lg">
               ЭДО: {user.edoOperators.map(op => EDO_OPERATORS[op].name).join(', ')}
