@@ -141,8 +141,8 @@ export default function DocumentDetailPage() {
           message = expired
             ? `МЧД от «${doc.sender.name}» ${expired.validUntil ? `просрочена (до ${formatDate(expired.validUntil)})` : 'просрочена'}. Запросите у компании новую доверенность.`
             : `МЧД от «${doc.sender.name}» недействительна. Запросите у компании новую доверенность.`
-        } else if (!linked.powers.some(p => p.code === requiredPowerCode)) {
-          const codes = linked.powers.map(p => p.code).join(', ')
+        } else if (!(linked.powers ?? []).some(p => (typeof p === 'string' ? 'LEGACY' : p?.code) === requiredPowerCode)) {
+          const codes = (linked.powers ?? []).map(p => (typeof p === 'string' ? 'LEGACY' : p?.code ?? '?')).join(', ')
           message = `В МЧД от «${doc.sender.name}» нет полномочия ${requiredPowerCode} (${requiredPowerName}). Доступные полномочия: ${codes || '—'}.`
         } else {
           message = `МЧД от «${doc.sender.name}» не подходит для подписания этого документа.`

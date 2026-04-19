@@ -85,8 +85,13 @@ export function findMcdForPower(
   return mcds.find(m => {
     if (m.status !== 'linked') return false
     if (m.validUntil && new Date(m.validUntil) < new Date()) return false
-    if (principalInn && m.principal.inn !== principalInn) return false
-    return m.powers.some(p => p.code === requiredCode)
+    if (principalInn && m.principal?.inn !== principalInn) return false
+    const powers = Array.isArray(m.powers) ? m.powers : []
+    return powers.some(p => {
+      // defensive: на случай мигрированных/старых данных
+      const code = typeof p === 'string' ? 'LEGACY' : p?.code
+      return code === requiredCode
+    })
   }) || null
 }
 

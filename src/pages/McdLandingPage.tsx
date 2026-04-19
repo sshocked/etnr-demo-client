@@ -448,14 +448,18 @@ function McdCard() {
                 </div>
               )}
               <div className="pt-2">
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1.5">Полномочия ({mcd.powers.length}):</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-1.5">Полномочия ({(mcd.powers ?? []).length}):</p>
                 <div className="space-y-1.5">
-                  {mcd.powers.map(p => (
-                    <div key={p.code} className="flex items-start gap-2 text-xs">
-                      <span className="px-2 py-0.5 bg-brand-50 dark:bg-brand-900/30 text-brand-700 rounded font-mono font-medium shrink-0">{p.code}</span>
-                      <span className="text-gray-700 dark:text-gray-300 leading-relaxed">{p.name}</span>
-                    </div>
-                  ))}
+                  {(mcd.powers ?? []).map((p, pi) => {
+                    const code = typeof p === 'string' ? 'LEGACY' : (p?.code ?? 'LEGACY')
+                    const name = typeof p === 'string' ? p : (p?.name ?? '(без названия)')
+                    return (
+                      <div key={code + '-' + pi} className="flex items-start gap-2 text-xs">
+                        <span className="px-2 py-0.5 bg-brand-50 dark:bg-brand-900/30 text-brand-700 rounded font-mono font-medium shrink-0">{code}</span>
+                        <span className="text-gray-700 dark:text-gray-300 leading-relaxed">{name}</span>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             </div>

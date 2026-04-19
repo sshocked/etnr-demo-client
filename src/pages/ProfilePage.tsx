@@ -230,16 +230,22 @@ export default function ProfilePage() {
                   </p>
                   {mcd.validUntil && <p>Действительна до: {formatDate(mcd.validUntil)}</p>}
                   <div className="flex flex-wrap gap-1.5 mt-1.5">
-                    {mcd.powers.map(p => (
-                      <span
-                        key={p.code}
-                        title={p.name}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 bg-brand-50 text-brand-700 rounded text-xs font-medium"
-                      >
-                        <span className="font-mono">{p.code}</span>
-                        <span>{p.name.length > 28 ? p.name.slice(0, 26) + '…' : p.name}</span>
-                      </span>
-                    ))}
+                    {(mcd.powers ?? []).map((p, pi) => {
+                      // defensive: на случай если миграция не отработала
+                      const code = typeof p === 'string' ? 'LEGACY' : (p?.code ?? 'LEGACY')
+                      const name = typeof p === 'string' ? p : (p?.name ?? '(без названия)')
+                      const display = name.length > 28 ? name.slice(0, 26) + '…' : name
+                      return (
+                        <span
+                          key={code + '-' + pi}
+                          title={name}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 bg-brand-50 text-brand-700 rounded text-xs font-medium"
+                        >
+                          <span className="font-mono">{code}</span>
+                          <span>{display}</span>
+                        </span>
+                      )
+                    })}
                   </div>
                 </div>
                 {(mcd.status === 'expired' || mcd.status === 'invalid' || mcd.status === 'insufficient') && (
