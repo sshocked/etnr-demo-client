@@ -424,7 +424,7 @@ export default function ProfilePage() {
                     {mcd.number || `МЧД #${idx + 1}`}
                   </span>
                   <Badge variant={mcdBadgeVariant[mcd.status] ?? 'default'} className="text-xs">
-                    {MCD_STATUS_LABELS[mcd.status] ?? mcd.status}
+                    {(MCD_STATUS_LABELS as Record<string, string>)[mcd.status] ?? mcd.status}
                   </Badge>
                 </div>
                 <div className="text-sm text-gray-600 dark:text-gray-400 space-y-1">
