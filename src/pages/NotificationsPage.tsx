@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FileText, CheckCircle, AlertTriangle, CreditCard, Info, BellOff, UserCheck } from 'lucide-react'
-import type { NotificationType } from '../lib/constants'
+import type { AppNotification, NotificationType } from '../lib/constants'
 import { cn } from '../lib/utils'
 import { api } from '../lib/api'
+import { emitNotificationsUpdated, mapNotification, type NotificationsResponse } from '../lib/notifications'
 import Button from '../components/ui/Button'
 import EmptyState from '../components/ui/EmptyState'
 
@@ -50,61 +51,69 @@ function formatRelativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
-interface ApiNotification {
-  id: string
-  kind: string
-  title: string
-  body: string
-  entityId?: string
-  isRead: boolean
-  createdAt: string
-}
-
-function kindToType(kind: string): NotificationType {
-  const map: Record<string, NotificationType> = {
-    document_received: 'new_doc',
-    document_signed: 'signed',
-    document_refused: 'signed',
-    mcd_expiring: 'mcd_expiry',
-    mcd_revoked: 'mcd_expiry',
-    system: 'system',
-  }
-  return map[kind] ?? 'system'
-}
-
 export default function NotificationsPage() {
   const navigate = useNavigate()
-  const [notifications, setNotifications] = useState<ApiNotification[]>([])
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api.get<{ notifications: ApiNotification[] }>('/notifications')
-      .then(data => setNotifications(data.notifications ?? []))
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const data = await api.get<NotificationsResponse>('/notifications')
+        if (cancelled) return
+        setNotifications((data.notifications ?? []).map(mapNotification))
+      } catch {
+        if (!cancelled) {
+          setNotifications([])
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const unreadCount = notifications.filter((n) => !n.isRead).length
+  const unreadCount = notifications.filter((n) => !n.read).length
 
   const markAllRead = useCallback(async () => {
-    await api.post('/notifications/read-all').catch(() => {})
-    setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
+    try {
+      await api.post('/notifications/read-all')
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
+      emitNotificationsUpdated()
+    } catch {
+      // Ignore and keep current UI state.
+    }
   }, [])
 
   const handleClick = useCallback(
-    async (notif: ApiNotification) => {
-      if (!notif.isRead) {
-        await api.post(`/notifications/${notif.id}/read`).catch(() => {})
-        setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n))
+    async (notif: AppNotification) => {
+      if (!notif.read) {
+        try {
+          await api.post(`/notifications/${notif.id}/read`)
+          setNotifications((prev) => prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n)))
+          emitNotificationsUpdated()
+        } catch {
+          // Ignore and keep current UI state.
+        }
       }
-      if (notif.entityId && (notif.kind === 'document_received' || notif.kind === 'document_signed' || notif.kind === 'document_refused')) {
-        navigate(`/documents/${notif.entityId}`)
+
+      if (notif.documentId) {
+        navigate(`/documents/${notif.documentId}`)
       }
     },
     [navigate],
   )
 
-  if (loading) return <div className="px-4 pt-6"><p className="text-gray-400 text-sm text-center">Загрузка...</p></div>
+  if (loading) {
+    return <div className="px-4 pt-6"><p className="text-gray-400 text-sm text-center">Загрузка...</p></div>
+  }
 
   if (notifications.length === 0) {
     return (
@@ -129,10 +138,9 @@ export default function NotificationsPage() {
 
       <div className="space-y-2">
         {notifications.map((notif) => {
-          const t = kindToType(notif.kind)
-          const Icon = ICON_MAP[t]
-          const colors = ICON_COLORS[t]
-          const borderColor = BORDER_COLORS[t]
+          const Icon = ICON_MAP[notif.type]
+          const colors = ICON_COLORS[notif.type]
+          const borderColor = BORDER_COLORS[notif.type]
 
           return (
             <div
@@ -143,7 +151,7 @@ export default function NotificationsPage() {
                 'hover:shadow-md active:scale-[0.99] transition-all duration-150',
                 'border-l-4',
                 borderColor,
-                !notif.isRead && 'bg-brand-50/40',
+                !notif.read && 'bg-brand-50/40',
               )}
             >
               <div className="flex gap-3">
@@ -157,15 +165,15 @@ export default function NotificationsPage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
-                    <p className={cn('text-base font-medium text-gray-900 dark:text-gray-100', !notif.isRead && 'font-semibold')}>
+                    <p className={cn('text-base font-medium text-gray-900 dark:text-gray-100', !notif.read && 'font-semibold')}>
                       {notif.title}
                     </p>
-                    {!notif.isRead && (
+                    {!notif.read && (
                       <span className="w-2.5 h-2.5 rounded-full bg-brand-500 flex-shrink-0 mt-1.5" />
                     )}
                   </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">{notif.body}</p>
-                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">{formatRelativeTime(notif.createdAt)}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">{notif.message}</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">{formatRelativeTime(notif.timestamp)}</p>
                 </div>
               </div>
             </div>

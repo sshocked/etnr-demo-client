@@ -1,8 +1,8 @@
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Menu, ChevronLeft, User, Bell } from 'lucide-react'
-import { getItem } from '../../lib/storage'
-import { STORAGE_KEYS } from '../../lib/constants'
-import type { AppNotification } from '../../lib/constants'
+import { api } from '../../lib/api'
+import { NOTIFICATIONS_UPDATED_EVENT, type NotificationUnreadCountResponse } from '../../lib/notifications'
 
 interface TopBarProps {
   title: string
@@ -12,9 +12,33 @@ interface TopBarProps {
 
 export default function TopBar({ title, showBack, onMenuClick }: TopBarProps) {
   const navigate = useNavigate()
+  const location = useLocation()
+  const [unreadCount, setUnreadCount] = useState(0)
 
-  const notifications = getItem<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS) ?? []
-  const unreadCount = notifications.filter((n) => !n.read).length
+  useEffect(() => {
+    let cancelled = false
+
+    const loadUnreadCount = async () => {
+      try {
+        const response = await api.get<NotificationUnreadCountResponse>('/notifications/unread-count')
+        if (!cancelled) {
+          setUnreadCount(response.count)
+        }
+      } catch {
+        if (!cancelled) {
+          setUnreadCount(0)
+        }
+      }
+    }
+
+    void loadUnreadCount()
+    window.addEventListener(NOTIFICATIONS_UPDATED_EVENT, loadUnreadCount)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener(NOTIFICATIONS_UPDATED_EVENT, loadUnreadCount)
+    }
+  }, [location.pathname])
 
   return (
     <header className="sticky top-0 z-30 bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-100/80 dark:border-gray-800/50">

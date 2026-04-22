@@ -1,61 +1,70 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileSignature, Clock, Archive, FileText, CheckCircle, AlertTriangle, Eye, ChevronRight, Inbox, Shield, KeyRound, BarChart3, QrCode } from 'lucide-react'
+import { FileSignature, Clock, Archive, CheckCircle, AlertTriangle, ChevronRight, Inbox, Shield, KeyRound, BarChart3, QrCode } from 'lucide-react'
 import Card from '../components/ui/Card'
 import { SkeletonCard } from '../components/ui/Skeleton'
 import Skeleton from '../components/ui/Skeleton'
 import { getItem } from '../lib/storage'
 import { STORAGE_KEYS } from '../lib/constants'
-import type { ActivityLogEntry, UserProfile, Certificate, Mcd } from '../lib/constants'
-import { formatDateTime } from '../lib/utils'
+import type { Certificate } from '../lib/constants'
 import { api } from '../lib/api'
 import { type DocumentCountsApi, normalizeCounts } from '../lib/documents'
 
-const activityIcons = {
-  sign: CheckCircle,
-  view: Eye,
-  receive: FileText,
-  error: AlertTriangle,
+interface AuthMeResponse {
+  id: string
+  phone: string
+  name: string
+  company: string
+  inn: string
+  onboardingCompleted: boolean
 }
 
-const activityColors = {
-  sign: 'text-green-600 bg-green-50',
-  view: 'text-blue-600 bg-blue-50',
-  receive: 'text-brand-600 bg-brand-50',
-  error: 'text-red-600 bg-red-50',
+interface McdApiItem {
+  id: string
+  status?: string
+  principalName?: string
+  principalInn?: string
+  validTo?: string | null
 }
 
 export default function DashboardPage() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [counts, setCounts] = useState(() => normalizeCounts(undefined))
-  const [activity, setActivity] = useState<ActivityLogEntry[]>([])
+  const [userName, setUserName] = useState('')
+  const [mcdItems, setMcdItems] = useState<McdApiItem[]>([])
 
   useEffect(() => {
     let cancelled = false
 
     ;(async () => {
       try {
-        const [countsResponse] = await Promise.all([
+        const [countsResponse, userResponse, mcdResponse] = await Promise.allSettled([
           api.get<DocumentCountsApi>('/documents/counts'),
+          api.get<AuthMeResponse>('/auth/me'),
+          api.get<{ items: McdApiItem[] }>('/mcd'),
         ])
 
         if (cancelled) return
-        setCounts(normalizeCounts(countsResponse))
-        setActivity(getItem<ActivityLogEntry[]>(STORAGE_KEYS.ACTIVITY) ?? [])
+
+        if (countsResponse.status === 'fulfilled') {
+          setCounts(normalizeCounts(countsResponse.value))
+        }
+        if (userResponse.status === 'fulfilled') {
+          setUserName(userResponse.value.name ?? '')
+        }
+        if (mcdResponse.status === 'fulfilled') {
+          setMcdItems(mcdResponse.value.items ?? [])
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
     })()
 
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [])
 
-  const user = getItem<UserProfile>(STORAGE_KEYS.USER)
   const cert = getItem<Certificate>(STORAGE_KEYS.CERTIFICATE)
-  const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
 
   const warnings = useMemo(() => {
     const now = new Date()
@@ -72,28 +81,28 @@ export default function DashboardPage() {
       }
     }
 
-    const expiringMcds = mcds.filter(mcd => {
-      if (!mcd.validUntil || mcd.status !== 'linked') return false
-      const daysLeft = Math.ceil((new Date(mcd.validUntil).getTime() - now.getTime()) / 86400000)
+    const expiringMcds = mcdItems.filter(mcd => {
+      if (!mcd.validTo || mcd.status !== 'linked') return false
+      const daysLeft = Math.ceil((new Date(mcd.validTo).getTime() - now.getTime()) / 86400000)
       return daysLeft <= 30
     })
 
     if (expiringMcds.length > 0) {
       const mcd = expiringMcds[0]
-      const daysLeft = Math.ceil((new Date(mcd.validUntil!).getTime() - now.getTime()) / 86400000)
+      const daysLeft = Math.ceil((new Date(mcd.validTo!).getTime() - now.getTime()) / 86400000)
       if (daysLeft <= 0) {
-        result.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: `МЧД от ${mcd.principal.companyName} истекла`, action: '/profile' })
+        result.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: `МЧД от ${mcd.principalName ?? 'контрагента'} истекла`, action: '/profile' })
       } else {
-        result.push({ icon: Shield, color: 'text-orange-600', bg: 'bg-orange-50', text: `МЧД от ${mcd.principal.companyName} истекает через ${daysLeft} дн.`, action: '/profile' })
+        result.push({ icon: Shield, color: 'text-orange-600', bg: 'bg-orange-50', text: `МЧД от ${mcd.principalName ?? 'контрагента'} истекает через ${daysLeft} дн.`, action: '/profile' })
       }
     }
 
-    if (mcds.length === 0 || mcds.every(mcd => mcd.status === 'none')) {
+    if (mcdItems.length === 0) {
       result.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: 'МЧД не привязана. Загрузите для подписания.', action: '/mcd' })
     }
 
     return result
-  }, [cert, mcds])
+  }, [cert, mcdItems])
 
   const needSign = counts.NEED_SIGN
   const inProgress = counts.IN_PROGRESS
@@ -117,7 +126,7 @@ export default function DashboardPage() {
     <div className="p-4 space-y-5">
       <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 truncate">
         {(() => {
-          const name = user?.name?.trim() ?? ''
+          const name = userName.trim()
           if (!name) return 'Привет!'
           const parts = name.split(/\s+/).filter(Boolean)
           const firstName = parts[1] || parts[0] || ''
@@ -220,37 +229,14 @@ export default function DashboardPage() {
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Последние действия</h2>
-          {activity.length > 5 && (
-            <button onClick={() => navigate('/documents')} className="text-sm text-brand-600 font-medium">
-              Все
-            </button>
-          )}
+          <button onClick={() => navigate('/documents')} className="text-sm text-brand-600 font-medium">
+            К документам
+          </button>
         </div>
-        {activity.length === 0 ? (
-          <div className="text-center py-8">
-            <Inbox className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-            <p className="text-sm text-gray-400">Пока нет действий</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {activity.slice(0, 5).map(item => {
-              const Icon = activityIcons[item.type]
-              const color = activityColors[item.type]
-              return (
-                <Card key={item.id} onClick={() => navigate(`/documents/${item.documentId}`)} className="flex items-center gap-3 !p-3.5">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${color}`}>
-                    <Icon className="h-5 w-5" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{item.documentNumber}</p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{item.message}</p>
-                  </div>
-                  <p className="text-[11px] text-gray-400 shrink-0">{formatDateTime(item.timestamp)}</p>
-                </Card>
-              )
-            })}
-          </div>
-        )}
+        <div className="text-center py-8">
+          <Inbox className="h-10 w-10 text-gray-300 mx-auto mb-3" />
+          <p className="text-sm text-gray-400">История появится здесь</p>
+        </div>
       </div>
     </div>
   )

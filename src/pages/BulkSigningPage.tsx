@@ -3,11 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CheckCircle, XCircle, Loader2, FileText, RotateCcw } from 'lucide-react'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
-import { getItem, setItem, shouldSimulateError } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus, DOC_TYPE_REQUIRED_POWER } from '../lib/constants'
-import type { DocRecord, ActivityLogEntry, Mcd } from '../lib/constants'
-import { generateId, cn } from '../lib/utils'
-import { findMcdForPower } from '../lib/mockMcdParser'
+import { cn } from '../lib/utils'
+import { api } from '../lib/api'
+import type { DocumentDetailApi } from '../lib/documents'
 
 type StepStatus = 'pending' | 'active' | 'done' | 'error'
 
@@ -15,6 +13,7 @@ interface DocSignState {
   id: string
   number: string
   senderName: string
+  senderInn: string
   steps: StepStatus[]
   status: 'waiting' | 'processing' | 'success' | 'error'
   mcdNumber?: string
@@ -22,8 +21,17 @@ interface DocSignState {
   errorReason?: string
 }
 
+interface McdForSigningResponse {
+  mcd: { id: string; number?: string; principalName?: string; principalInn?: string } | null
+  reason?: string
+}
+
+interface SignInitResponse {
+  signRequestId: string
+  requiredDigest: string
+}
+
 const STEP_LABELS = ['Проверка', 'Подпись', 'Отправка']
-const STEP_DELAY = 1500
 
 export default function BulkSigningPage() {
   const navigate = useNavigate()
@@ -33,148 +41,136 @@ export default function BulkSigningPage() {
   const [docStates, setDocStates] = useState<DocSignState[]>([])
   const [processing, setProcessing] = useState(false)
   const [done, setDone] = useState(false)
+  const [loading, setLoading] = useState(true)
   const startedRef = useRef(false)
 
-  // Initialize doc states from localStorage
   useEffect(() => {
-    const allDocs = getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? []
-    const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
-    const states: DocSignState[] = ids
-      .map(id => {
-        const doc = allDocs.find(d => d.id === id)
-        if (!doc) return null
-        const requiredCode = DOC_TYPE_REQUIRED_POWER[doc.type]
-        const mcd = findMcdForPower(mcds, requiredCode, doc.sender.inn)
-        return {
-          id: doc.id,
-          number: doc.number,
-          senderName: doc.sender.name,
-          steps: ['pending', 'pending', 'pending'] as StepStatus[],
-          status: 'waiting' as const,
-          mcdNumber: mcd?.number ?? undefined,
-          mcdPrincipal: mcd?.principal.companyName,
-          errorReason: mcd ? undefined : `Нет МЧД от «${doc.sender.name}» с полномочием ${requiredCode}`,
-        }
-      })
-      .filter((s): s is NonNullable<typeof s> & DocSignState => s !== null)
+    if (ids.length === 0) {
+      setLoading(false)
+      return
+    }
 
-    setDocStates(states)
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const docs = await Promise.all(
+          ids.map(id => api.get<DocumentDetailApi>(`/documents/${id}`).catch(() => null)),
+        )
+
+        if (cancelled) return
+
+        const states: DocSignState[] = docs
+          .filter((d): d is DocumentDetailApi => d !== null)
+          .map(doc => ({
+            id: doc.id,
+            number: doc.number,
+            senderName: doc.sender?.name ?? 'Неизвестный',
+            senderInn: doc.sender?.inn ?? '',
+            steps: ['pending', 'pending', 'pending'] as StepStatus[],
+            status: 'waiting' as const,
+          }))
+
+        setDocStates(states)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+
+    return () => { cancelled = true }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const processDocuments = useCallback(async (states: DocSignState[]) => {
     if (states.length === 0) return
 
     setProcessing(true)
-    const simulateError = shouldSimulateError()
-    const failIndex = simulateError ? Math.floor(Math.random() * states.length) : -1
-    const failStep = simulateError ? Math.floor(Math.random() * 3) : -1
-
     let currentStates = [...states]
 
     for (let docIdx = 0; docIdx < currentStates.length; docIdx++) {
       const docState = currentStates[docIdx]
-      if (docState.status === 'success') continue // skip already successful (retry scenario)
+      if (docState.status === 'success') continue
 
-      // Нет подходящей МЧД — сразу помечаем ошибкой без имитации подписания
-      if (!docState.mcdNumber) {
+      currentStates = currentStates.map((s, i) =>
+        i === docIdx ? { ...s, status: 'processing' as const, steps: ['active', 'pending', 'pending'] as StepStatus[] } : s,
+      )
+      setDocStates([...currentStates])
+
+      // Step 1: Check MCD
+      let mcdNumber: string | undefined
+      let mcdPrincipal: string | undefined
+      try {
+        const mcdResp = await api.get<McdForSigningResponse>('/mcd/find-for-signing', {
+          docType: 'etrn',
+          senderInn: docState.senderInn,
+        })
+        if (!mcdResp.mcd) {
+          throw new Error(mcdResp.reason ?? `Нет подходящей МЧД от «${docState.senderName}»`)
+        }
+        mcdNumber = mcdResp.mcd.number ?? mcdResp.mcd.id
+        mcdPrincipal = mcdResp.mcd.principalName ?? docState.senderName
+      } catch (err) {
+        const errorReason = err instanceof Error ? err.message : 'Ошибка проверки МЧД'
         currentStates = currentStates.map((s, i) =>
-          i === docIdx
-            ? { ...s, status: 'error' as const, steps: ['error', 'pending', 'pending'] as StepStatus[] }
-            : s
+          i === docIdx ? { ...s, status: 'error' as const, steps: ['error', 'pending', 'pending'] as StepStatus[], errorReason, mcdNumber, mcdPrincipal } : s,
         )
         setDocStates([...currentStates])
         continue
       }
 
-      // Mark as processing
       currentStates = currentStates.map((s, i) =>
-        i === docIdx ? { ...s, status: 'processing' as const, steps: ['pending', 'pending', 'pending'] } : s
+        i === docIdx ? { ...s, steps: ['done', 'active', 'pending'] as StepStatus[], mcdNumber, mcdPrincipal } : s,
       )
       setDocStates([...currentStates])
 
-      let failed = false
-      for (let step = 0; step < 3; step++) {
-        // Mark step active
-        currentStates = currentStates.map((s, i) => {
-          if (i !== docIdx) return s
-          const newSteps = [...s.steps] as StepStatus[]
-          newSteps[step] = 'active'
-          return { ...s, steps: newSteps }
-        })
-        setDocStates([...currentStates])
-
-        await new Promise(resolve => setTimeout(resolve, STEP_DELAY))
-
-        // Check for simulated error
-        if (docIdx === failIndex && step === failStep) {
-          currentStates = currentStates.map((s, i) => {
-            if (i !== docIdx) return s
-            const newSteps = [...s.steps] as StepStatus[]
-            newSteps[step] = 'error'
-            return { ...s, steps: newSteps, status: 'error' as const }
-          })
-          setDocStates([...currentStates])
-          failed = true
-          break
-        }
-
-        // Mark step done
-        currentStates = currentStates.map((s, i) => {
-          if (i !== docIdx) return s
-          const newSteps = [...s.steps] as StepStatus[]
-          newSteps[step] = 'done'
-          return { ...s, steps: newSteps }
-        })
-        setDocStates([...currentStates])
-      }
-
-      if (!failed) {
-        // Update localStorage for this doc
-        const now = new Date().toISOString()
-        const allDocs = getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? []
-        const updated = allDocs.map(d => {
-          if (d.id !== docState.id) return d
-          return {
-            ...d,
-            status: DocumentStatus.SIGNED,
-            signedAt: now,
-            updatedAt: now,
-            history: [...d.history, {
-              id: generateId(),
-              timestamp: now,
-              action: 'signed' as const,
-              actor: 'Вы',
-              description: `Документ подписан электронной подписью (массовое подписание, МЧД ${docState.mcdNumber} от ${docState.mcdPrincipal})`,
-            }],
-          }
-        })
-        setItem(STORAGE_KEYS.DOCUMENTS, updated)
-
-        // Add activity entry
-        const activity = getItem<ActivityLogEntry[]>(STORAGE_KEYS.ACTIVITY) ?? []
-        activity.unshift({
-          id: generateId(),
-          timestamp: now,
-          type: 'sign',
-          documentId: docState.id,
-          documentNumber: docState.number,
-          message: `Документ ${docState.number} подписан`,
-        })
-        setItem(STORAGE_KEYS.ACTIVITY, activity)
-
-        // Mark success
+      // Step 2: Init sign
+      let signRequestId: string
+      let requiredDigest: string
+      try {
+        const initResp = await api.post<SignInitResponse>(`/documents/${docState.id}/sign/init`, { mode: 'sign' })
+        signRequestId = initResp.signRequestId
+        requiredDigest = initResp.requiredDigest
+      } catch (err) {
+        const errorReason = err instanceof Error ? err.message : 'Ошибка инициализации подписи'
         currentStates = currentStates.map((s, i) =>
-          i === docIdx ? { ...s, status: 'success' as const } : s
+          i === docIdx ? { ...s, status: 'error' as const, steps: ['done', 'error', 'pending'] as StepStatus[], errorReason } : s,
         )
         setDocStates([...currentStates])
+        continue
       }
+
+      currentStates = currentStates.map((s, i) =>
+        i === docIdx ? { ...s, steps: ['done', 'done', 'active'] as StepStatus[] } : s,
+      )
+      setDocStates([...currentStates])
+
+      // Step 3: Submit signature
+      try {
+        const signature = btoa(requiredDigest)
+        await api.post(`/documents/${docState.id}/sign/submit`, {
+          signRequestId,
+          signature,
+          geoLat: null,
+          geoLon: null,
+        })
+      } catch (err) {
+        const errorReason = err instanceof Error ? err.message : 'Ошибка отправки подписи'
+        currentStates = currentStates.map((s, i) =>
+          i === docIdx ? { ...s, status: 'error' as const, steps: ['done', 'done', 'error'] as StepStatus[], errorReason } : s,
+        )
+        setDocStates([...currentStates])
+        continue
+      }
+
+      currentStates = currentStates.map((s, i) =>
+        i === docIdx ? { ...s, status: 'success' as const, steps: ['done', 'done', 'done'] as StepStatus[] } : s,
+      )
+      setDocStates([...currentStates])
     }
 
     setProcessing(false)
     setDone(true)
   }, [])
 
-  // Auto-start processing
   useEffect(() => {
     if (docStates.length > 0 && !processing && !done && !startedRef.current) {
       startedRef.current = true
@@ -187,14 +183,14 @@ export default function BulkSigningPage() {
   const totalCount = docStates.length
 
   const handleRetryFailed = () => {
+    startedRef.current = false
     setDone(false)
     const resetStates = docStates.map(s =>
       s.status === 'error'
-        ? { ...s, status: 'waiting' as const, steps: ['pending', 'pending', 'pending'] as StepStatus[] }
-        : s
+        ? { ...s, status: 'waiting' as const, steps: ['pending', 'pending', 'pending'] as StepStatus[], errorReason: undefined }
+        : s,
     )
     setDocStates(resetStates)
-    processDocuments(resetStates)
   }
 
   if (ids.length === 0) {
@@ -206,9 +202,16 @@ export default function BulkSigningPage() {
     )
   }
 
+  if (loading) {
+    return (
+      <div className="min-h-[calc(100vh-56px)] flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
+      </div>
+    )
+  }
+
   return (
     <div className="p-4 space-y-4 pb-8">
-      {/* Header status */}
       {done ? (
         <div className={cn(
           'rounded-2xl p-5 text-center',
@@ -240,7 +243,6 @@ export default function BulkSigningPage() {
         </div>
       )}
 
-      {/* Document list with progress */}
       <div className="space-y-2">
         {docStates.map(ds => (
           <Card key={ds.id} className={cn(
@@ -269,7 +271,6 @@ export default function BulkSigningPage() {
                 <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{ds.number}</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">{ds.senderName}</p>
 
-                {/* Step indicators */}
                 {(ds.status === 'processing' || ds.status === 'success' || ds.status === 'error') && (
                   <div className="flex items-center gap-3 mt-2">
                     {STEP_LABELS.map((label, idx) => {
@@ -314,7 +315,6 @@ export default function BulkSigningPage() {
         ))}
       </div>
 
-      {/* Bottom actions */}
       {done && (
         <div className="space-y-3 pt-2">
           {errorCount > 0 && (

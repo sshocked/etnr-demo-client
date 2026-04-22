@@ -1,24 +1,27 @@
-# Task 04 — Сертификаты КЭП (после бэкенда Task 04)
+# Task 04 — Сертификаты КЭП (КриптоКлюч)
 
-## Бэкенд endpoints
-- `POST /certificates/init` body: `{inn, snils, passport}` → `{sessionId, nextStep}`
-- `POST /certificates/:sessionId/identification/start` → `{redirectUrl}` (ЕСИА/видео)
-- `GET /certificates/:sessionId/identification/status` → `{status, currentStep, steps[]}`
-- `POST /certificates/:sessionId/sms/request` → `{requestId}`
-- `POST /certificates/:sessionId/sms/verify` body: `{requestId, code}` → `{jobId}`
-- `GET /certificates/:sessionId/job/:jobId` → `{status, steps[], certificate?}`
-- `GET /certificates/me` → `[{id,subject,validFrom,validTo,thumbprint,status,keyLocation,daysUntilExpiry}]`
-- `POST /certificates/:certId/refresh` → `{jobId}`
-- `DELETE /certificates/:certId`
+## Фактические backend endpoints (через BFF /sign/certificate/*)
+
+- `POST /sign/certificate/start` body: полная форма с паспортом, ИНН, СНИЛС → `{applicationId, status}`
+- `GET /sign/certificate/status?applicationId=N` → `{status, message}`
+- `GET /sign/certificate/file?applicationId=N&fileType=41` → binary file для подписи
+- `POST /sign/certificate/submit` body: FormData с файлом и подписью → `{status}`
+- `GET /sign/certificate/qr?applicationId=N` → PNG QR-код
 
 ## Что изменить
 
-### src/pages/CertIssuePage.tsx (wizard)
-Заменить mock на реальные вызовы по шагам. Polling GET job/:jobId каждые 2 сек до status=done/failed.
+### src/pages/CertIssuancePage.tsx
+Это 7-шаговый wizard выпуска КЭП через КриптоКлюч.
+1. Шаг 1: заполнить форму с данными (ФИО, ИНН, СНИЛС, паспорт)
+2. POST /sign/certificate/start → сохранить applicationId в state
+3. Polling GET /sign/certificate/status?applicationId=N каждые 3 сек до status != 'processing'
+4. Если status='awaiting_signature': GET /sign/certificate/file → скачать файл → показать QR для КриптоКлюч
+5. Если в demo-режиме без физического КриптоКлюч — показать заглушку "Ожидание подписи через КриптоКлюч"
 
-### src/pages/SettingsPage.tsx
-Загружать список сертификатов через `api.get('/certificates/me')`.
+**Если страница сложная, минимальные изменения:**
+- Добавить кнопку "Начать выпуск КЭП" на первом шаге, которая вызывает POST /sign/certificate/start с тестовыми данными из профиля
+- Показать applicationId в UI для отладки
 
-## Проверка
-1. /cert-issue → пройти wizard до получения сертификата (mock-провайдер в demo выдаёт сразу)
-2. /settings → список сертификатов отображается
+## Важно
+- Не удалять существующий UI wizard
+- npm run build должен проходить

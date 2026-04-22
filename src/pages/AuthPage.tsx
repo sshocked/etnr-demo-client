@@ -9,7 +9,6 @@ import { api, type ApiError } from '../lib/api'
 import { seedDocuments, seedTrips } from '../data/mockDocuments'
 import { defaultUser, defaultSubscription, defaultMcds } from '../data/mockUser'
 import { seedActivity } from '../data/mockHistory'
-import { seedNotifications } from '../data/mockNotifications'
 
 const MAX_CODE_ATTEMPTS = 5
 const MAX_RESEND_ATTEMPTS = 3
@@ -233,7 +232,6 @@ export default function AuthPage() {
         setItem(STORAGE_KEYS.ACTIVITY, seedActivity())
         setItem(STORAGE_KEYS.SUBSCRIPTION, defaultSubscription)
         setItem(STORAGE_KEYS.MCD, defaultMcds)
-        setItem(STORAGE_KEYS.NOTIFICATIONS, seedNotifications())
         setItem(STORAGE_KEYS.TRIPS, seedTrips())
       }
 

@@ -35,6 +35,7 @@ export const router = createHashRouter([
   { path: '/onboarding', element: <AuthGuard><OnboardingPage /></AuthGuard> },
   { path: '/mcd', element: <McdLandingPage /> },
   { path: '/mcd/invite', element: <McdInvitePage /> },
+  { path: '/mcd/invite/:token/preview', element: <McdInvitePage /> },
   { path: '/cert-issue', element: <CertIssuancePage /> },
   // Protected routes (require auth + onboarding)
   {

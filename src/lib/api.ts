@@ -3,6 +3,7 @@ import { getItem, removeItem, setItem } from './storage'
 
 const DEFAULT_BASE_URL = 'http://localhost:8082'
 const BASE = import.meta.env.VITE_API_BASE_URL ?? DEFAULT_BASE_URL
+export const API_BASE_URL = BASE
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
 type QueryValue = string | number | boolean | null | undefined
@@ -216,6 +217,51 @@ async function request<T>(
   return send<T>(method, path, body, params)
 }
 
+async function requestBlob(
+  path: string,
+  params?: QueryParams,
+  retryAfterRefresh = true,
+): Promise<Blob> {
+  const tokens = getTokens()
+  const headers = new Headers()
+
+  if (tokens?.access_token) {
+    headers.set('Authorization', `Bearer ${tokens.access_token}`)
+  }
+
+  let response: Response
+
+  try {
+    response = await fetch(buildUrl(path, params), {
+      method: 'GET',
+      headers,
+    })
+  } catch (cause) {
+    const error = new Error('Network request failed') as ApiError
+    error.status = 0
+    error.message = cause instanceof Error && cause.message ? cause.message : 'Network request failed'
+    throw error
+  }
+
+  if (response.status === 401 && retryAfterRefresh && path !== '/auth/token/refresh') {
+    const refreshed = await refreshTokens()
+    if (!refreshed) {
+      const error = new Error('Unauthorized') as ApiError
+      error.status = 401
+      error.message = 'Unauthorized'
+      throw error
+    }
+
+    return requestBlob(path, params, false)
+  }
+
+  if (!response.ok) {
+    throw await createApiError(response)
+  }
+
+  return response.blob()
+}
+
 function get<T>(path: string, params?: QueryParams): Promise<T> {
   return request<T>('GET', path, undefined, params)
 }
@@ -234,6 +280,7 @@ function del<T>(path: string): Promise<T> {
 
 export const api = {
   get,
+  getBlob: requestBlob,
   post,
   put,
   delete: del,

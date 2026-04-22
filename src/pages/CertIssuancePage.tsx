@@ -5,6 +5,7 @@ import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Card from '../components/ui/Card'
 import Badge from '../components/ui/Badge'
+import { api, type ApiError } from '../lib/api'
 import { getItem, setItem } from '../lib/storage'
 import { STORAGE_KEYS } from '../lib/constants'
 import type { UserProfile, Certificate } from '../lib/constants'
@@ -30,6 +31,16 @@ interface AnketaData {
   region: string
   city: string
   clientProfileId: '1' | '2' | '3'
+}
+
+interface CertificateStartResponse {
+  applicationId: string | number
+  status: string
+}
+
+interface CertificateStatusResponse {
+  status: string
+  message?: string
 }
 
 const CERT_STATUSES = [
@@ -84,7 +95,201 @@ export default function CertIssuancePage() {
   const [waitingStatusIdx, setWaitingStatusIdx] = useState(0)
   const [, setCertIssued] = useState(false)
   const [errors, setErrors] = useState<Partial<Record<keyof AnketaData, string>>>({})
+  const [requestError, setRequestError] = useState<string | null>(null)
+  const [requestMessage, setRequestMessage] = useState<string | null>(null)
+  const [backendStatus, setBackendStatus] = useState<string | null>(null)
+  const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null)
+  const [downloadedFileName, setDownloadedFileName] = useState<string | null>(null)
+  const [isStarting, setIsStarting] = useState(false)
+  const [signatureConfirmed, setSignatureConfirmed] = useState(false)
   const waitingTimerRef = useRef<number | null>(null)
+  const qrCodeUrlRef = useRef<string | null>(null)
+  const signatureConfirmedRef = useRef(false)
+
+  const revokeQrCodeUrl = useCallback(() => {
+    if (!qrCodeUrlRef.current) return
+    URL.revokeObjectURL(qrCodeUrlRef.current)
+    qrCodeUrlRef.current = null
+    setQrCodeUrl(null)
+  }, [])
+
+  const stopPolling = useCallback(() => {
+    if (!waitingTimerRef.current) return
+    clearTimeout(waitingTimerRef.current)
+    waitingTimerRef.current = null
+  }, [])
+
+  const applyQrCodeBlob = useCallback((blob: Blob) => {
+    revokeQrCodeUrl()
+    const objectUrl = URL.createObjectURL(blob)
+    qrCodeUrlRef.current = objectUrl
+    setQrCodeUrl(objectUrl)
+  }, [revokeQrCodeUrl])
+
+  const getRequestErrorMessage = useCallback((error: unknown) => {
+    if (error && typeof error === 'object' && 'message' in error && typeof (error as ApiError).message === 'string') {
+      return (error as ApiError).message
+    }
+    return 'Не удалось выполнить запрос на выпуск сертификата'
+  }, [])
+
+  const buildStartPayload = useCallback((data: AnketaData) => {
+    const normalizedSurname = data.surname.trim() || user?.name?.split(' ')[0] || 'Иванов'
+    const normalizedName = data.name.trim() || user?.name?.split(' ')[1] || 'Иван'
+    const normalizedPatronymic = data.patronymic.trim() || user?.name?.split(' ')[2] || 'Иванович'
+    const normalizedSnils = unmaskDigits(data.snils) || '11223344595'
+    const normalizedInn = unmaskDigits(data.innfl || (user?.inn?.length === 12 ? user.inn : '')) || '123456789012'
+    const normalizedPhone = unmaskDigits(data.phone) || unmaskDigits(user?.phone || '') || '79990000000'
+    const normalizedEmail = data.email.trim() || user?.email || 'demo@example.com'
+
+    return {
+      surname: normalizedSurname,
+      name: normalizedName,
+      patronymic: normalizedPatronymic,
+      inn: normalizedInn,
+      snils: normalizedSnils,
+      email: normalizedEmail,
+      phone: normalizedPhone,
+      passportSeries: '4508',
+      passportNumber: '123456',
+      passportIssuedBy: 'ОУФМС России по г. Москве',
+      passportIssuedDate: '2020-01-01',
+      passportDepartmentCode: '770-001',
+      passport: {
+        series: '4508',
+        number: '123456',
+        issuedBy: 'ОУФМС России по г. Москве',
+        issuedDate: '2020-01-01',
+        departmentCode: '770-001',
+      },
+    }
+  }, [user])
+
+  const syncWaitingStatus = useCallback((status: string, confirmed: boolean) => {
+    if (status === 'awaiting_signature') {
+      setWaitingStatusIdx(3)
+      return
+    }
+    if (status === 'processing') {
+      setWaitingStatusIdx(confirmed ? 4 : 1)
+      return
+    }
+    if (['issued', 'completed', 'success', 'done', 'ready'].includes(status)) {
+      setWaitingStatusIdx(5)
+      return
+    }
+    setWaitingStatusIdx(0)
+  }, [])
+
+  const loadQrCode = useCallback(async (appId: string) => {
+    const qrBlob = await api.getBlob('/sign/certificate/qr', { applicationId: appId })
+    applyQrCodeBlob(qrBlob)
+  }, [applyQrCodeBlob])
+
+  const downloadCertificateFile = useCallback(async (appId: string) => {
+    const fileBlob = await api.getBlob('/sign/certificate/file', { applicationId: appId, fileType: 41 })
+    const objectUrl = URL.createObjectURL(fileBlob)
+    const link = document.createElement('a')
+    const fileName = `certificate-request-${appId}.bin`
+    link.href = objectUrl
+    link.download = fileName
+    link.click()
+    URL.revokeObjectURL(objectUrl)
+    setDownloadedFileName(fileName)
+  }, [])
+
+  const pollCertificateStatus = useCallback(async (appId: string) => {
+    stopPolling()
+
+    try {
+      const response = await api.get<CertificateStatusResponse>('/sign/certificate/status', { applicationId: appId })
+      const normalizedStatus = response.status || 'processing'
+      const confirmed = signatureConfirmedRef.current
+
+      setBackendStatus(normalizedStatus)
+      setRequestMessage(response.message ?? null)
+      setRequestError(null)
+      syncWaitingStatus(normalizedStatus, confirmed)
+
+      if (normalizedStatus === 'awaiting_signature') {
+        if (!confirmed) {
+          await Promise.all([
+            loadQrCode(appId),
+            downloadCertificateFile(appId),
+          ])
+          setStep('qr')
+          return
+        }
+
+        setStep('waiting')
+        waitingTimerRef.current = window.setTimeout(() => {
+          void pollCertificateStatus(appId)
+        }, 3000)
+        return
+      }
+
+      if (normalizedStatus === 'processing') {
+        setStep('waiting')
+        waitingTimerRef.current = window.setTimeout(() => {
+          void pollCertificateStatus(appId)
+        }, 3000)
+        return
+      }
+
+      if (['issued', 'completed', 'success', 'done', 'ready'].includes(normalizedStatus)) {
+        setStep('review')
+        return
+      }
+
+      setStep('waiting')
+    } catch (error) {
+      setRequestError(getRequestErrorMessage(error))
+      setStep('waiting')
+    }
+  }, [downloadCertificateFile, getRequestErrorMessage, loadQrCode, stopPolling, syncWaitingStatus])
+
+  const startCertificateIssue = useCallback(async (payload: ReturnType<typeof buildStartPayload>) => {
+    setSubmitting(true)
+    setIsStarting(true)
+    setRequestError(null)
+    setRequestMessage(null)
+    setBackendStatus(null)
+    setSignatureConfirmed(false)
+    signatureConfirmedRef.current = false
+    revokeQrCodeUrl()
+    setDownloadedFileName(null)
+    stopPolling()
+    setStep('submit')
+
+    try {
+      const response = await api.post<CertificateStartResponse>('/sign/certificate/start', payload)
+      const nextApplicationId = String(response.applicationId)
+
+      setApplicationId(nextApplicationId)
+      setBackendStatus(response.status)
+      setRequestMessage(`Заявка создана: ${response.status}`)
+
+      if (response.status === 'awaiting_signature') {
+        syncWaitingStatus(response.status, false)
+        await Promise.all([
+          loadQrCode(nextApplicationId),
+          downloadCertificateFile(nextApplicationId),
+        ])
+        setStep('qr')
+        return
+      }
+
+      syncWaitingStatus(response.status, false)
+      setStep('waiting')
+      await pollCertificateStatus(nextApplicationId)
+    } catch (error) {
+      setRequestError(getRequestErrorMessage(error))
+      setStep('anketa')
+    } finally {
+      setSubmitting(false)
+      setIsStarting(false)
+    }
+  }, [downloadCertificateFile, getRequestErrorMessage, loadQrCode, pollCertificateStatus, revokeQrCodeUrl, setStep, stopPolling, syncWaitingStatus])
 
   const updateAnketa = useCallback((key: keyof AnketaData, value: string) => {
     // Apply masks
@@ -167,25 +372,44 @@ export default function CertIssuancePage() {
       return
     }
     setErrors({})
-
-    setStep('submit')
-    setSubmitting(true)
-
-    // Simulate Шаг 1: Создание заявки
-    setTimeout(() => {
-      const appId = `${700000 + Math.floor(Math.random() * 99999)}`
-      setApplicationId(appId)
-      setSubmitting(false)
-      setStep('qr')
-    }, 2000)
+    void startCertificateIssue(buildStartPayload(anketa))
   }
 
   const handleQrScanned = () => {
+    if (!applicationId) return
+    setSignatureConfirmed(true)
+    signatureConfirmedRef.current = true
+    setRequestMessage('Ожидание подписи через КриптоКлюч')
     setStep('waiting')
-    startWaitingSequence(0)
+    void pollCertificateStatus(applicationId)
+  }
+
+  const handleStartFromProfile = () => {
+    const profileDraft: AnketaData = {
+      ...anketa,
+      surname: anketa.surname || user?.name?.split(' ')[0] || 'Иванов',
+      name: anketa.name || user?.name?.split(' ')[1] || 'Иван',
+      patronymic: anketa.patronymic || user?.name?.split(' ')[2] || 'Иванович',
+      email: anketa.email || user?.email || 'demo@example.com',
+      phone: anketa.phone || (user?.phone ? maskPhone(user.phone) : '+7 (999) 000-00-00'),
+      innfl: anketa.innfl || (user?.inn?.length === 12 ? user.inn : ''),
+      inn: anketa.inn || (user?.inn?.length === 10 ? user.inn : ''),
+      snils: anketa.snils || '112-233-445 95',
+    }
+
+    setAnketa(profileDraft)
+    void startCertificateIssue(buildStartPayload(profileDraft))
   }
 
   const handleSaveQr = () => {
+    if (qrCodeUrl) {
+      const link = document.createElement('a')
+      link.download = `cryptokey-qr-${applicationId ?? 'demo'}.png`
+      link.href = qrCodeUrl
+      link.click()
+      return
+    }
+
     const canvas = document.createElement('canvas')
     const size = 400
     canvas.width = size
@@ -260,10 +484,15 @@ export default function CertIssuancePage() {
   }
 
   useEffect(() => {
+    signatureConfirmedRef.current = signatureConfirmed
+  }, [signatureConfirmed])
+
+  useEffect(() => {
     return () => {
-      if (waitingTimerRef.current) clearTimeout(waitingTimerRef.current)
+      stopPolling()
+      revokeQrCodeUrl()
     }
-  }, [])
+  }, [revokeQrCodeUrl, stopPolling])
 
   const handleReviewConfirm = () => {
     // Save certificate
@@ -313,6 +542,26 @@ export default function CertIssuancePage() {
       </header>
 
       <div className="flex-1 flex flex-col px-6 py-6 overflow-y-auto">
+        {(requestError || applicationId || backendStatus || requestMessage) && (
+          <Card className={cn(
+            '!p-3 mb-4',
+            requestError && 'border-red-200 dark:border-red-900/50 bg-red-50/70 dark:bg-red-950/20',
+          )}>
+            {requestError && (
+              <p className="text-sm text-red-700 dark:text-red-300">{requestError}</p>
+            )}
+            {applicationId && (
+              <p className="text-xs text-gray-600 dark:text-gray-300">applicationId: {applicationId}</p>
+            )}
+            {backendStatus && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">backend status: {backendStatus}</p>
+            )}
+            {requestMessage && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">{requestMessage}</p>
+            )}
+          </Card>
+        )}
+
         {/* Step: Type selection */}
         {step === 'type' && (
           <>
@@ -327,6 +576,13 @@ export default function CertIssuancePage() {
             </div>
 
             <div className="space-y-3">
+              <Button fullWidth variant="secondary" onClick={handleStartFromProfile} loading={isStarting}>
+                Начать выпуск КЭП
+              </Button>
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                Быстрый старт с тестовыми данными из профиля и demo-паспортом
+              </p>
+
               <button
                 onClick={() => handleTypeSelect('new')}
                 className="w-full text-left p-4 rounded-2xl border border-gray-200 dark:border-gray-600 hover:border-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors"
@@ -431,7 +687,7 @@ export default function CertIssuancePage() {
             </div>
 
             <div className="mt-6 pt-4 border-t border-gray-100 dark:border-gray-700/50">
-              <Button fullWidth onClick={handleAnketaSubmit}>
+              <Button fullWidth onClick={handleAnketaSubmit} loading={isStarting}>
                 Отправить заявку
               </Button>
               <p className="text-xs text-gray-400 dark:text-gray-500 text-center mt-3">
@@ -469,13 +725,20 @@ export default function CertIssuancePage() {
               Отсканируйте QR-код в приложении КриптоКлюч для подписания заявления
             </p>
 
-            {/* Mock QR code */}
             <div className="w-56 h-56 bg-gray-50 dark:bg-gray-800/50 border-2 border-gray-200 dark:border-gray-600 rounded-2xl flex items-center justify-center mb-6 mx-auto">
-              <div className="text-center">
-                <QrCode className="h-32 w-32 text-gray-800 dark:text-gray-200 mx-auto" />
-                <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">QR для КриптоКлюч</p>
-              </div>
+              {qrCodeUrl ? (
+                <img src={qrCodeUrl} alt="QR для КриптоКлюч" className="h-48 w-48 rounded-xl object-contain" />
+              ) : (
+                <div className="text-center">
+                  <QrCode className="h-32 w-32 text-gray-800 dark:text-gray-200 mx-auto" />
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">QR для КриптоКлюч</p>
+                </div>
+              )}
             </div>
+
+            <p className="text-xs text-amber-600 dark:text-amber-300 mb-4 max-w-xs">
+              В demo-режиме без физического КриптоКлюч можно перейти дальше: страница покажет заглушку ожидания подписи.
+            </p>
 
             <div className="space-y-3 w-full max-w-xs">
               <Button fullWidth onClick={handleQrScanned}>
@@ -489,6 +752,11 @@ export default function CertIssuancePage() {
               <p className="text-xs text-gray-400 dark:text-gray-500 text-center">
                 Нажмите после подписания заявления в приложении КриптоКлюч
               </p>
+              {downloadedFileName && (
+                <p className="text-xs text-gray-400 dark:text-gray-500 text-center">
+                  Файл для подписи скачан: {downloadedFileName}
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -513,6 +781,11 @@ export default function CertIssuancePage() {
 
             {applicationId && (
               <p className="text-xs text-gray-400 dark:text-gray-500 mt-6">Заявка #{applicationId}</p>
+            )}
+            {signatureConfirmed && backendStatus === 'awaiting_signature' && (
+              <p className="text-xs text-amber-600 dark:text-amber-300 mt-2 text-center max-w-sm">
+                Ожидание подписи через КриптоКлюч. В demo-режиме статус может не измениться без реального подтверждения.
+              </p>
             )}
           </div>
         )}

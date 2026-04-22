@@ -6,7 +6,6 @@ import { STORAGE_KEYS } from '../lib/constants'
 import { seedDocuments, seedTrips } from '../data/mockDocuments'
 import { defaultUser, defaultSubscription, defaultMcds } from '../data/mockUser'
 import { seedActivity } from '../data/mockHistory'
-import { seedNotifications } from '../data/mockNotifications'
 
 export default function WelcomePage() {
   const navigate = useNavigate()
@@ -30,7 +29,6 @@ export default function WelcomePage() {
     setItem(STORAGE_KEYS.ACTIVITY, seedActivity())
     setItem(STORAGE_KEYS.SUBSCRIPTION, defaultSubscription)
     setItem(STORAGE_KEYS.MCD, defaultMcds)
-    setItem(STORAGE_KEYS.NOTIFICATIONS, seedNotifications())
     setItem(STORAGE_KEYS.TRIPS, seedTrips())
     navigate('/dashboard')
   }

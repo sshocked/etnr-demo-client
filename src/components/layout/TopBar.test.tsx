@@ -1,9 +1,25 @@
-import { describe, it, expect, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import TopBar from './TopBar'
 import { renderWithRouter } from '../../test/helpers'
 
 describe('TopBar', () => {
+  const fetchMock = vi.fn()
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ count: 0 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('показывает заголовок', () => {
     renderWithRouter(<TopBar title="Главная" />)
     expect(screen.getByText('Главная')).toBeInTheDocument()
@@ -45,16 +61,17 @@ describe('TopBar', () => {
     expect(onMenuClick).toHaveBeenCalled()
   })
 
-  it('показывает счётчик непрочитанных уведомлений', () => {
-    localStorage.setItem(
-      'etrn_notifications',
-      JSON.stringify([
-        { id: '1', type: 'new_doc', title: 'N1', message: 'm', timestamp: '2026-01-01', read: false },
-        { id: '2', type: 'new_doc', title: 'N2', message: 'm', timestamp: '2026-01-01', read: false },
-        { id: '3', type: 'new_doc', title: 'N3', message: 'm', timestamp: '2026-01-01', read: true },
-      ]),
+  it('показывает счётчик непрочитанных уведомлений', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ count: 2 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
     )
+
     renderWithRouter(<TopBar title="Главная" />)
-    expect(screen.getByText('2')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('2')).toBeInTheDocument()
+    })
   })
 })
