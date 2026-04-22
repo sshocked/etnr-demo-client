@@ -79,6 +79,7 @@ export interface DocumentDetailApi {
   number: string
   type?: string | null
   status?: string | null
+  requiresSign?: boolean | null
   sender?: PartyApi | null
   receiver?: PartyApi | null
   driver?: DriverApi | null
@@ -178,13 +179,15 @@ function buildBaseDocRecord(params: {
   requiresSign?: boolean | null
 }): DocRecord {
   const updatedAt = params.updatedAt ?? params.createdAt ?? new Date().toISOString()
+  const status = normalizeStatus(params.status, params.requiresSign)
 
   return {
     id: params.id,
     number: params.number,
     title: params.number,
     type: normalizeType(params.type),
-    status: normalizeStatus(params.status, params.requiresSign),
+    status,
+    requiresSign: params.requiresSign ?? status === DocumentStatus.NEED_SIGN,
     createdAt: params.createdAt ?? updatedAt,
     updatedAt,
     signedAt: params.signedAt ?? null,
@@ -250,6 +253,7 @@ export function normalizeDetailDocument(item: DocumentDetailApi): DocRecord {
     updatedAt: item.updatedAt,
     signedAt: item.signedAt,
     edoOperator: item.edoOperator,
+    requiresSign: item.requiresSign,
   })
 
   return {

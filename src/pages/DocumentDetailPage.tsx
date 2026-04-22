@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useParams } from 'react-router-dom'
 import { FileText, Download, MapPin, Truck, Package, Building2, Shield } from 'lucide-react'
 import Card from '../components/ui/Card'
 import Badge from '../components/ui/Badge'
@@ -12,6 +12,7 @@ import { useToast } from '../components/ui/Toast'
 import MockPdfPreview from '../components/documents/MockPdfPreview'
 import { api } from '../lib/api'
 import { type DocumentDetailApi, normalizeDetailDocument } from '../lib/documents'
+import { refuseDocument, signDocument } from '../lib/documentSigning'
 
 const badgeVariant: Record<DocumentStatus, 'info' | 'warning' | 'success' | 'error'> = {
   [DocumentStatus.NEED_SIGN]: 'info',
@@ -33,19 +34,37 @@ const historyDotColor: Record<string, string> = {
 
 export default function DocumentDetailPage() {
   const { id } = useParams()
-  const navigate = useNavigate()
   const { toast } = useToast()
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
+  const [signing, setSigning] = useState(false)
+  const [refusing, setRefusing] = useState(false)
+  const [refuseModalOpen, setRefuseModalOpen] = useState(false)
+  const [refuseReason, setRefuseReason] = useState('')
   const [doc, setDoc] = useState<DocRecord | null>(null)
   const [tab, setTab] = useState<'preview' | 'details' | 'history' | 'files'>('preview')
 
-  useEffect(() => {
+  const loadDocument = useCallback(async (showLoader = true) => {
     if (!id) return
 
+    if (showLoader) setLoading(true)
+
+    try {
+      const response = await api.get<DocumentDetailApi>(`/documents/${id}`)
+      setDoc(normalizeDetailDocument(response))
+      void api.post(`/documents/${id}/view`).catch(() => undefined)
+    } catch {
+      setDoc(null)
+    } finally {
+      if (showLoader) setLoading(false)
+    }
+  }, [id])
+
+  useEffect(() => {
     let cancelled = false
 
     ;(async () => {
+      if (!id) return
       setLoading(true)
       try {
         const response = await api.get<DocumentDetailApi>(`/documents/${id}`)
@@ -85,6 +104,44 @@ export default function DocumentDetailPage() {
       toast('Не удалось подготовить экспорт', 'error')
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleSign = async () => {
+    if (!id) return
+
+    setSigning(true)
+    try {
+      await signDocument(id)
+      toast('Документ подписан', 'success')
+      await loadDocument(false)
+    } catch {
+      toast('Не удалось подписать документ', 'error')
+    } finally {
+      setSigning(false)
+    }
+  }
+
+  const handleRefuse = async () => {
+    if (!id) return
+
+    const reason = refuseReason.trim()
+    if (!reason) {
+      toast('Укажите причину отказа', 'error')
+      return
+    }
+
+    setRefusing(true)
+    try {
+      await refuseDocument(id, reason)
+      toast('Отказ отправлен', 'success')
+      setRefuseModalOpen(false)
+      setRefuseReason('')
+      await loadDocument(false)
+    } catch {
+      toast('Не удалось отправить отказ', 'error')
+    } finally {
+      setRefusing(false)
     }
   }
 
@@ -293,13 +350,48 @@ export default function DocumentDetailPage() {
           <Button fullWidth variant="secondary" loading={exporting} onClick={handleExport}>
             Экспортировать PDF
           </Button>
-          {doc.status === DocumentStatus.NEED_SIGN && (
-            <Button fullWidth onClick={() => navigate(`/documents/${doc.id}/sign?mode=sign`)}>
-              Подписать
-            </Button>
+          {doc.requiresSign && (
+            <>
+              <Button fullWidth variant="secondary" disabled={signing || refusing} onClick={() => setRefuseModalOpen(true)}>
+                Отказать
+              </Button>
+              <Button fullWidth loading={signing} disabled={refusing} onClick={() => void handleSign()}>
+                Подписать
+              </Button>
+            </>
           )}
         </div>
       </div>
+
+      {refuseModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4" onClick={() => !refusing && setRefuseModalOpen(false)}>
+          <Card className="w-full max-w-md !p-4">
+            <div className="space-y-4" onClick={event => event.stopPropagation()}>
+              <div>
+                <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Причина отказа</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{doc.number}</p>
+              </div>
+
+              <textarea
+                value={refuseReason}
+                onChange={event => setRefuseReason(event.target.value)}
+                rows={4}
+                placeholder="Укажите причину отказа"
+                className="w-full rounded-[14px] border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 resize-none"
+              />
+
+              <div className="flex gap-2">
+                <Button fullWidth variant="secondary" disabled={refusing} onClick={() => setRefuseModalOpen(false)}>
+                  Отмена
+                </Button>
+                <Button fullWidth variant="danger" loading={refusing} onClick={() => void handleRefuse()}>
+                  Отправить отказ
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   )
 }

@@ -139,6 +139,7 @@ export interface DocRecord {
   title: string
   type: DocumentType
   status: DocumentStatus
+  requiresSign?: boolean
   createdAt: string
   updatedAt: string
   signedAt: string | null

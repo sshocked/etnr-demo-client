@@ -7,10 +7,12 @@ import Button from '../components/ui/Button'
 import { SkeletonCard } from '../components/ui/Skeleton'
 import EmptyState from '../components/ui/EmptyState'
 import ErrorState from '../components/ui/ErrorState'
+import { useToast } from '../components/ui/Toast'
 import { DocumentStatus, STATUS_LABELS, STATUS_COLORS, DOC_TYPE_LABELS, type DocRecord } from '../lib/constants'
 import { formatDate, cn } from '../lib/utils'
 import { api } from '../lib/api'
 import { type DocumentsListResponse, normalizeListDocument } from '../lib/documents'
+import { refuseDocument, signDocument } from '../lib/documentSigning'
 
 const statusFilters: { label: string; value: string }[] = [
   { label: 'Все', value: 'ALL' },
@@ -41,6 +43,7 @@ function toDateInputValue(date: Date): string {
 export default function DocumentListPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const { toast } = useToast()
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState(false)
@@ -55,6 +58,10 @@ export default function DocumentListPage() {
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [signingId, setSigningId] = useState<string | null>(null)
+  const [refusingId, setRefusingId] = useState<string | null>(null)
+  const [refuseDoc, setRefuseDoc] = useState<DocRecord | null>(null)
+  const [refuseReason, setRefuseReason] = useState('')
 
   const deferredSearch = useDeferredValue(search.trim())
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -237,6 +244,53 @@ export default function DocumentListPage() {
     setSelectedIds(new Set())
   }
 
+  const handleSign = async (documentId: string) => {
+    setSigningId(documentId)
+    try {
+      await signDocument(documentId)
+      toast('Документ подписан', 'success')
+      reload()
+    } catch {
+      toast('Не удалось подписать документ', 'error')
+    } finally {
+      setSigningId(null)
+    }
+  }
+
+  const openRefuseModal = (doc: DocRecord) => {
+    setRefuseDoc(doc)
+    setRefuseReason('')
+  }
+
+  const closeRefuseModal = () => {
+    if (refusingId) return
+    setRefuseDoc(null)
+    setRefuseReason('')
+  }
+
+  const submitRefuse = async () => {
+    if (!refuseDoc) return
+
+    const reason = refuseReason.trim()
+    if (!reason) {
+      toast('Укажите причину отказа', 'error')
+      return
+    }
+
+    setRefusingId(refuseDoc.id)
+    try {
+      await refuseDocument(refuseDoc.id, reason)
+      toast('Отказ отправлен', 'success')
+      setRefuseDoc(null)
+      setRefuseReason('')
+      reload()
+    } catch {
+      toast('Не удалось отправить отказ', 'error')
+    } finally {
+      setRefusingId(null)
+    }
+  }
+
   const handleBulkSign = () => {
     if (selectedIds.size === 0) return
     navigate(`/documents/bulk-sign?ids=${Array.from(selectedIds).join(',')}`)
@@ -293,6 +347,26 @@ export default function DocumentListPage() {
           </div>
           <p className="text-sm text-gray-500 dark:text-gray-400 truncate mt-0.5">{doc.sender.name} → {doc.receiver.name}</p>
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{DOC_TYPE_LABELS[doc.type]} · {formatDate(doc.updatedAt)}</p>
+          {!selectionMode && doc.requiresSign && (
+            <div className="flex gap-2 mt-3" onClick={event => event.stopPropagation()}>
+              <Button
+                size="sm"
+                loading={signingId === doc.id}
+                onClick={() => void handleSign(doc.id)}
+              >
+                Подписать
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={refusingId === doc.id}
+                disabled={signingId === doc.id}
+                onClick={() => openRefuseModal(doc)}
+              >
+                Отказать
+              </Button>
+            </div>
+          )}
         </div>
         {!selectionMode && <ChevronRight className="h-5 w-5 text-gray-300 shrink-0" />}
       </Card>
@@ -513,6 +587,39 @@ export default function DocumentListPage() {
           <Button fullWidth size="lg" onClick={handleBulkSign}>
             Подписать выбранные ({selectedIds.size})
           </Button>
+        </div>
+      )}
+
+      {refuseDoc && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-4" onClick={closeRefuseModal}>
+          <Card className="w-full max-w-md !p-4">
+            <div
+              className="space-y-4"
+              onClick={event => event.stopPropagation()}
+            >
+              <div>
+                <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Причина отказа</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{refuseDoc.number}</p>
+              </div>
+
+              <textarea
+                value={refuseReason}
+                onChange={event => setRefuseReason(event.target.value)}
+                rows={4}
+                placeholder="Укажите причину отказа"
+                className="w-full rounded-[14px] border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 resize-none"
+              />
+
+              <div className="flex gap-2">
+                <Button fullWidth variant="secondary" disabled={Boolean(refusingId)} onClick={closeRefuseModal}>
+                  Отмена
+                </Button>
+                <Button fullWidth variant="danger" loading={refusingId === refuseDoc.id} onClick={() => void submitRefuse()}>
+                  Отправить отказ
+                </Button>
+              </div>
+            </div>
+          </Card>
         </div>
       )}
     </div>
