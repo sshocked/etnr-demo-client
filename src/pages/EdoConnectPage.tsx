@@ -5,9 +5,8 @@ import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import Badge from '../components/ui/Badge'
 import Input from '../components/ui/Input'
-import { getItem, setItem } from '../lib/storage'
-import { STORAGE_KEYS, EDO_OPERATORS } from '../lib/constants'
-import type { UserProfile, EdoOperator } from '../lib/constants'
+import { EDO_OPERATORS } from '../lib/constants'
+import type { EdoOperator } from '../lib/constants'
 import { cn } from '../lib/utils'
 import { useToast } from '../components/ui/Toast'
 
@@ -16,13 +15,12 @@ type FlowStep = 'list' | 'select' | 'register' | 'connecting'
 export default function EdoConnectPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
-  const user = getItem<UserProfile>(STORAGE_KEYS.USER)
-  const connectedOps = user?.edoOperators ?? []
 
-  const [flowStep, setFlowStep] = useState<FlowStep>(connectedOps.length > 0 ? 'list' : 'select')
+  const [connectedOps, setConnectedOps] = useState<EdoOperator[]>([])
+  const [flowStep, setFlowStep] = useState<FlowStep>('select')
   const [selectedOp, setSelectedOp] = useState<EdoOperator | null>(null)
   const [regEmail, setRegEmail] = useState('')
-  const [regPhone, setRegPhone] = useState(user?.phone ?? '')
+  const [regPhone, setRegPhone] = useState('')
 
   const availableOps = (Object.keys(EDO_OPERATORS) as EdoOperator[]).filter(
     op => !connectedOps.includes(op)
@@ -40,11 +38,7 @@ export default function EdoConnectPage() {
     }
     setFlowStep('connecting')
     setTimeout(() => {
-      const u = getItem<UserProfile>(STORAGE_KEYS.USER)
-      if (u) {
-        const ops = [...(u.edoOperators ?? []), selectedOp!]
-        setItem(STORAGE_KEYS.USER, { ...u, edoOperators: ops })
-      }
+      setConnectedOps(prev => [...prev, selectedOp!])
       toast(`${EDO_OPERATORS[selectedOp!].name} подключён!`, 'success')
       setSelectedOp(null)
       setRegEmail('')
@@ -53,20 +47,8 @@ export default function EdoConnectPage() {
   }
 
   const handleDisconnect = (op: EdoOperator) => {
-    const u = getItem<UserProfile>(STORAGE_KEYS.USER)
-    if (u) {
-      const ops = (u.edoOperators ?? []).filter(o => o !== op)
-      setItem(STORAGE_KEYS.USER, { ...u, edoOperators: ops })
-    }
+    setConnectedOps(prev => prev.filter(o => o !== op))
     toast(`${EDO_OPERATORS[op].name} отключён`, 'info')
-    // Refresh - check if any operators left
-    const updated = getItem<UserProfile>(STORAGE_KEYS.USER)
-    if (!updated?.edoOperators?.length) {
-      setFlowStep('select')
-    } else {
-      // Force re-render
-      navigate('/profile/edo', { replace: true })
-    }
   }
 
   return (
@@ -204,8 +186,8 @@ export default function EdoConnectPage() {
             <div className="flex items-center gap-3 mb-4">
               <Building2 className="h-5 w-5 text-brand-600" />
               <div>
-                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{user?.company || 'Компания'}</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400">ИНН {user?.inn || '—'}</p>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Ваша компания</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Данные будут переданы оператору ЭДО</p>
               </div>
             </div>
             <div className="space-y-3">

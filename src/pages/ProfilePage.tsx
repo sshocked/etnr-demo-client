@@ -7,11 +7,22 @@ import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import { useToast } from '../components/ui/Toast'
 import { getItem, setItem } from '../lib/storage'
-import { STORAGE_KEYS, SUB_STATUS_LABELS, MCD_STATUS_LABELS, EDO_OPERATORS } from '../lib/constants'
-import type { UserProfile, Subscription, Mcd, Certificate } from '../lib/constants'
+import { STORAGE_KEYS, SUB_STATUS_LABELS, MCD_STATUS_LABELS } from '../lib/constants'
+import type { UserProfile, Subscription, Certificate } from '../lib/constants'
 import { formatDate, cn } from '../lib/utils'
 import { api, type ApiError } from '../lib/api'
 import { mapBillingStatusToSubscription, type BillingStatusResponse } from '../lib/billing'
+
+interface McdApiItem {
+  id: string
+  number: string
+  status: string
+  principal: string
+  principalInn: string
+  validFrom: string
+  validUntil: string
+  powers: string[]
+}
 
 const subBadgeVariant: Record<string, 'success' | 'error' | 'warning'> = {
   active: 'success', expired: 'error', unpaid: 'warning',
@@ -72,12 +83,12 @@ export default function ProfilePage() {
   const navigate = useNavigate()
   const { toast } = useToast()
   const [storedUser] = useState<StoredUserProfile | null>(() => getItem<StoredUserProfile>(STORAGE_KEYS.USER))
-  const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
+  const [mcds, setMcds] = useState<McdApiItem[]>([])
   const [user, setUser] = useState<StoredUserProfile | null>(storedUser)
   const [subscription, setSubscription] = useState<Subscription | null>(null)
   const storedUserRef = useRef(storedUser)
   const cert = getItem<Certificate>(STORAGE_KEYS.CERTIFICATE) ?? user?.certificate
-  const [mcdLoading, setMcdLoading] = useState<number | null>(null)
+  const [mcdLoading, setMcdLoading] = useState<string | null>(null)
   const [mcdLinkCopied, setMcdLinkCopied] = useState(false)
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileSaving, setProfileSaving] = useState(false)
@@ -97,9 +108,10 @@ export default function ProfilePage() {
       setProfileError('')
 
       try {
-        const [remoteUser, billingStatus] = await Promise.all([
+        const [remoteUser, billingStatus, mcdResp] = await Promise.all([
           api.get<AuthMeResponse>('/auth/me'),
           api.get<BillingStatusResponse>('/billing/status'),
+          api.get<{ mcds: McdApiItem[] }>('/mcd').catch(() => ({ mcds: [] })),
         ])
         if (cancelled) return
 
@@ -108,6 +120,7 @@ export default function ProfilePage() {
 
         setUser(nextUser)
         setSubscription(nextSubscription)
+        setMcds(mcdResp.mcds ?? [])
         setItem(STORAGE_KEYS.USER, nextUser)
         setForm({
           name: remoteUser.name ?? '',
@@ -160,15 +173,18 @@ export default function ProfilePage() {
     setTimeout(() => setMcdLinkCopied(false), 2000)
   }
 
-  const handleMcdRefresh = async (idx: number) => {
-    setMcdLoading(idx)
-    setTimeout(() => {
-      const updated = [...mcds]
-      updated[idx] = { ...updated[idx], status: 'linked', validUntil: '2027-06-01' }
-      setItem(STORAGE_KEYS.MCD, updated)
-      setMcdLoading(null)
+  const handleMcdRefresh = async (mcdId: string) => {
+    setMcdLoading(mcdId)
+    try {
+      await api.post(`/mcd/${mcdId}/refresh`)
+      const mcdResp = await api.get<{ mcds: McdApiItem[] }>('/mcd')
+      setMcds(mcdResp.mcds ?? [])
       toast('МЧД обновлена', 'success')
-    }, 1500)
+    } catch {
+      toast('Не удалось обновить МЧД', 'error')
+    } finally {
+      setMcdLoading(null)
+    }
   }
 
   const handleIssueCert = () => {
@@ -268,11 +284,6 @@ export default function ProfilePage() {
           {user?.email && (
             <span className="px-2.5 py-1 bg-white/15 rounded-lg truncate max-w-[200px]">{user.email}</span>
           )}
-          {user?.edoOperators?.length ? (
-            <span className="px-2.5 py-1 bg-white/15 rounded-lg">
-              ЭДО: {user.edoOperators.map(op => EDO_OPERATORS[op].name).join(', ')}
-            </span>
-          ) : null}
         </div>
       </div>
 
@@ -385,21 +396,9 @@ export default function ProfilePage() {
             <Link2 className="h-5 w-5 text-gray-400" />
             <span className="font-semibold text-gray-900 dark:text-gray-100">Операторы ЭДО</span>
           </div>
-          <Badge variant={user?.edoOperators?.length ? 'success' : 'default'}>
-            {user?.edoOperators?.length ? `${user.edoOperators.length} подкл.` : 'Нет'}
-          </Badge>
+          <Badge variant="default">Нажмите →</Badge>
         </div>
-        {user?.edoOperators?.length ? (
-          <div className="flex flex-wrap gap-1.5">
-            {user.edoOperators.map(op => (
-              <span key={op} className="px-2.5 py-1 bg-brand-50 text-brand-700 rounded-lg text-xs font-medium">
-                {EDO_OPERATORS[op].name}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-gray-400">Нажмите для подключения</p>
-        )}
+        <p className="text-sm text-gray-400">Подключите оператора для обмена ЭТрН</p>
       </Card>
 
       {/* MCDs — always show */}
@@ -409,7 +408,7 @@ export default function ProfilePage() {
             <Shield className="h-5 w-5 text-gray-400" />
             <span className="font-semibold text-gray-900 dark:text-gray-100">МЧД</span>
           </div>
-          <Badge variant={mcds.some(m => m.status === 'linked') ? 'success' : mcds.length ? 'warning' : 'default'}>
+          <Badge variant={mcds.some(m => m.status === 'active') ? 'success' : mcds.length ? 'warning' : 'default'}>
             {mcds.length ? `${mcds.length} шт.` : 'Нет'}
           </Badge>
         </div>
@@ -417,46 +416,35 @@ export default function ProfilePage() {
         {mcds.length > 0 ? (
           <div className="space-y-4">
             {mcds.map((mcd, idx) => (
-              <div key={mcd.number || idx} className={cn(
+              <div key={mcd.id || idx} className={cn(
                 idx > 0 && 'pt-4 border-t border-gray-100',
               )}>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-gray-800 dark:text-gray-200">
                     {mcd.number || `МЧД #${idx + 1}`}
                   </span>
-                  <Badge variant={mcdBadgeVariant[mcd.status]} className="text-xs">
-                    {MCD_STATUS_LABELS[mcd.status]}
+                  <Badge variant={mcdBadgeVariant[mcd.status] ?? 'default'} className="text-xs">
+                    {MCD_STATUS_LABELS[mcd.status] ?? mcd.status}
                   </Badge>
                 </div>
                 <div className="text-sm text-gray-600 dark:text-gray-400 space-y-1">
-                  <p>Доверитель: {mcd.principal.companyName} (ИНН {mcd.principal.inn})</p>
-                  <p>
-                    Доверенный: <span className={mcd.trustedPerson === user?.name ? 'text-green-700 font-medium' : 'text-red-600 font-medium'}>
-                      {mcd.trustedPerson}
-                    </span>
-                  </p>
+                  <p>Доверитель: {mcd.principal} (ИНН {mcd.principalInn})</p>
                   {mcd.validUntil && <p>Действительна до: {formatDate(mcd.validUntil)}</p>}
-                  <div className="flex flex-wrap gap-1.5 mt-1.5">
-                    {(mcd.powers ?? []).map((p, pi) => {
-                      // defensive: на случай если миграция не отработала
-                      const code = typeof p === 'string' ? 'LEGACY' : (p?.code ?? 'LEGACY')
-                      const name = typeof p === 'string' ? p : (p?.name ?? '(без названия)')
-                      const display = name.length > 28 ? name.slice(0, 26) + '…' : name
-                      return (
+                  {mcd.powers?.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {mcd.powers.map((p, pi) => (
                         <span
-                          key={code + '-' + pi}
-                          title={name}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 bg-brand-50 text-brand-700 rounded text-xs font-medium"
+                          key={pi}
+                          className="px-2 py-0.5 bg-brand-50 text-brand-700 rounded text-xs font-medium"
                         >
-                          <span className="font-mono">{code}</span>
-                          <span>{display}</span>
+                          {p}
                         </span>
-                      )
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 {(mcd.status === 'expired' || mcd.status === 'invalid' || mcd.status === 'insufficient') && (
-                  <Button fullWidth variant="secondary" size="sm" className="mt-3" loading={mcdLoading === idx} onClick={() => handleMcdRefresh(idx)}>
+                  <Button fullWidth variant="secondary" size="sm" className="mt-3" loading={mcdLoading === mcd.id} onClick={() => handleMcdRefresh(mcd.id)}>
                     <RefreshCw className="h-4 w-4" />
                     Обновить
                   </Button>

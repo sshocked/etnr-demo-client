@@ -1,35 +1,88 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ChevronLeft, ChevronRight, TrendingUp, Package, Truck, Clock } from 'lucide-react'
+import { ChevronLeft, ChevronRight, TrendingUp } from 'lucide-react'
 import Card from '../components/ui/Card'
 import Skeleton, { SkeletonCard } from '../components/ui/Skeleton'
-import { getItem, simulateDelay } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus, DOC_TYPE_LABELS } from '../lib/constants'
-import type { DocRecord, DocumentType } from '../lib/constants'
-import { formatMoney } from '../lib/utils'
+import { api } from '../lib/api'
+import { DOC_TYPE_LABELS } from '../lib/constants'
+import type { DocumentType } from '../lib/constants'
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
   'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
 ]
 
-function getMonthDocs(docs: DocRecord[], year: number, month: number): DocRecord[] {
+interface DocItem {
+  id: string
+  number: string
+  type: string
+  status: string
+  senderName: string
+  receiverName: string
+  updatedAt: string
+}
+
+interface CountsResponse {
+  needSign: number
+  inProgress: number
+  signed: number
+  signedWithReservations: number
+  refused: number
+  total: number
+}
+
+interface DocumentsResponse {
+  documents: DocItem[]
+  nextCursor: string
+}
+
+async function fetchAllDocuments(): Promise<DocItem[]> {
+  const result: DocItem[] = []
+  let cursor = ''
+  for (let i = 0; i < 10; i++) {
+    const params: Record<string, string> = { limit: '100' }
+    if (cursor) params.cursor = cursor
+    const data = await api.get<DocumentsResponse>('/documents', params)
+    result.push(...(data.documents ?? []))
+    cursor = data.nextCursor ?? ''
+    if (!cursor) break
+  }
+  return result
+}
+
+function getMonthDocs(docs: DocItem[], year: number, month: number): DocItem[] {
   return docs.filter(d => {
-    const date = new Date(d.createdAt)
+    if (!d.updatedAt) return false
+    const date = new Date(d.updatedAt)
     return date.getFullYear() === year && date.getMonth() === month
   })
 }
 
 export default function StatsPage() {
   const [loading, setLoading] = useState(true)
-  const [docs, setDocs] = useState<DocRecord[]>([])
+  const [docs, setDocs] = useState<DocItem[]>([])
+  const [counts, setCounts] = useState<CountsResponse | null>(null)
   const [monthOffset, setMonthOffset] = useState(0)
 
   useEffect(() => {
-    (async () => {
-      await simulateDelay()
-      setDocs(getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? [])
-      setLoading(false)
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [allDocs, countsData] = await Promise.all([
+          fetchAllDocuments(),
+          api.get<CountsResponse>('/documents/counts'),
+        ])
+        if (cancelled) return
+        setDocs(allDocs)
+        setCounts(countsData)
+      } catch {
+        if (!cancelled) {
+          setDocs([])
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     })()
+    return () => { cancelled = true }
   }, [])
 
   const now = new Date()
@@ -39,12 +92,10 @@ export default function StatsPage() {
 
   const monthDocs = useMemo(() => getMonthDocs(docs, viewYear, viewMonth), [docs, viewYear, viewMonth])
 
-  const signed = monthDocs.filter(d => d.status === DocumentStatus.SIGNED || d.status === DocumentStatus.SIGNED_WITH_RESERVATIONS)
-  const refused = monthDocs.filter(d => d.status === DocumentStatus.REFUSED)
-  const inProgress = monthDocs.filter(d => d.status === DocumentStatus.IN_PROGRESS || d.status === DocumentStatus.NEED_SIGN)
-  const totalAmount = signed.reduce((sum, d) => sum + d.amount, 0)
+  const signed = monthDocs.filter(d => d.status === 'signed' || d.status === 'signed_with_reservations')
+  const refused = monthDocs.filter(d => d.status === 'refused')
+  const inProgress = monthDocs.filter(d => d.status === 'in_progress' || d.status === 'need_sign')
 
-  // By document type
   const byType = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const d of monthDocs) {
@@ -55,50 +106,33 @@ export default function StatsPage() {
 
   const maxTypeCount = Math.max(...byType.map(([, c]) => c), 1)
 
-  // By sender — top 5
   const bySender = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const d of monthDocs) {
-      counts[d.sender.name] = (counts[d.sender.name] || 0) + 1
+      if (d.senderName) counts[d.senderName] = (counts[d.senderName] || 0) + 1
     }
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5)
   }, [monthDocs])
 
   const maxSenderCount = Math.max(...bySender.map(([, c]) => c), 1)
 
-  // Last 3 months trend
   const trend = useMemo(() => {
-    const result: { label: string; signed: number; amount: number; isCurrent: boolean }[] = []
+    const result: { label: string; signed: number; isCurrent: boolean }[] = []
     for (let i = -2; i <= 0; i++) {
       const d = new Date(viewYear, viewMonth + i, 1)
       const mDocs = getMonthDocs(docs, d.getFullYear(), d.getMonth())
-      const mSigned = mDocs.filter(doc => doc.status === DocumentStatus.SIGNED || doc.status === DocumentStatus.SIGNED_WITH_RESERVATIONS)
+      const mSigned = mDocs.filter(doc => doc.status === 'signed' || doc.status === 'signed_with_reservations')
       result.push({
         label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`,
         signed: mSigned.length,
-        amount: mSigned.reduce((s, doc) => s + doc.amount, 0),
         isCurrent: i === 0,
       })
     }
     return result
   }, [docs, viewYear, viewMonth])
 
-  // Bottom stats
-  const avgWeight = useMemo(() => {
-    if (docs.length === 0) return 0
-    const total = docs.reduce((s, d) => s + (d.cargo?.weight ?? 0), 0)
-    return total / docs.length
-  }, [docs])
-
-  const uniqueRoutes = useMemo(() => {
-    const routes = new Set<string>()
-    for (const d of docs) {
-      if (d.route) routes.add(`${d.route.from} → ${d.route.to}`)
-    }
-    return routes.size
-  }, [docs])
-
   const typeColors: Record<string, string> = {
+    etrn: 'bg-brand-500',
     trn: 'bg-brand-500',
     ttn: 'bg-blue-500',
     act: 'bg-green-500',
@@ -141,23 +175,23 @@ export default function StatsPage() {
         </button>
       </div>
 
-      {/* Summary cards */}
+      {/* Summary cards — per-month from docs, total counts from API */}
       <div className="grid grid-cols-2 gap-3">
         <Card className="text-center !py-4">
-          <p className="text-2xl font-bold text-green-600">{signed.length}</p>
+          <p className="text-2xl font-bold text-green-600">{monthOffset === 0 && counts ? counts.signed + counts.signedWithReservations : signed.length}</p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Подписано</p>
         </Card>
         <Card className="text-center !py-4">
-          <p className="text-2xl font-bold text-red-600">{refused.length}</p>
+          <p className="text-2xl font-bold text-red-600">{monthOffset === 0 && counts ? counts.refused : refused.length}</p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Отказано</p>
         </Card>
         <Card className="text-center !py-4">
-          <p className="text-2xl font-bold text-blue-600">{inProgress.length}</p>
+          <p className="text-2xl font-bold text-blue-600">{monthOffset === 0 && counts ? counts.inProgress + counts.needSign : inProgress.length}</p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">В работе</p>
         </Card>
         <Card className="text-center !py-4">
-          <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatMoney(totalAmount)}</p>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Сумма</p>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{monthOffset === 0 && counts ? counts.total : monthDocs.length}</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Всего</p>
         </Card>
       </div>
 
@@ -171,7 +205,7 @@ export default function StatsPage() {
             {byType.map(([type, count]) => (
               <div key={type}>
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-gray-700 dark:text-gray-300">{DOC_TYPE_LABELS[type as DocumentType] ?? type}</span>
+                  <span className="text-sm text-gray-700 dark:text-gray-300">{DOC_TYPE_LABELS[type as DocumentType] ?? type.toUpperCase()}</span>
                   <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{count}</span>
                 </div>
                 <div className="h-3 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
@@ -226,45 +260,11 @@ export default function StatsPage() {
               <span className={`text-sm font-medium ${t.isCurrent ? 'text-brand-700' : 'text-gray-700 dark:text-gray-300'}`}>
                 {t.label}
               </span>
-              <div className="flex items-center gap-4 text-right">
-                <span className="text-sm text-gray-600 dark:text-gray-400">{t.signed} подп.</span>
-                <span className="text-sm font-semibold text-gray-900 dark:text-gray-100 min-w-[80px]">{formatMoney(t.amount)}</span>
-              </div>
+              <span className="text-sm text-gray-600 dark:text-gray-400">{t.signed} подп.</span>
             </div>
           ))}
         </div>
       </Card>
-
-      {/* Bottom stats */}
-      <div className="grid grid-cols-1 gap-3">
-        <Card className="flex items-center gap-3 !p-4">
-          <div className="w-10 h-10 rounded-xl bg-orange-50 dark:bg-orange-900/20 flex items-center justify-center shrink-0">
-            <Package className="h-5 w-5 text-orange-600" />
-          </div>
-          <div className="flex-1">
-            <p className="text-sm text-gray-500 dark:text-gray-400">Средний груз</p>
-            <p className="text-lg font-bold text-gray-900 dark:text-gray-100">{avgWeight.toFixed(1)} тонн</p>
-          </div>
-        </Card>
-        <Card className="flex items-center gap-3 !p-4">
-          <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center shrink-0">
-            <Truck className="h-5 w-5 text-blue-600" />
-          </div>
-          <div className="flex-1">
-            <p className="text-sm text-gray-500 dark:text-gray-400">Всего маршрутов</p>
-            <p className="text-lg font-bold text-gray-900 dark:text-gray-100">{uniqueRoutes}</p>
-          </div>
-        </Card>
-        <Card className="flex items-center gap-3 !p-4">
-          <div className="w-10 h-10 rounded-xl bg-green-50 dark:bg-green-900/20 flex items-center justify-center shrink-0">
-            <Clock className="h-5 w-5 text-green-600" />
-          </div>
-          <div className="flex-1">
-            <p className="text-sm text-gray-500 dark:text-gray-400">Среднее время подписания</p>
-            <p className="text-lg font-bold text-gray-900 dark:text-gray-100">4 мин 32 сек</p>
-          </div>
-        </Card>
-      </div>
     </div>
   )
 }

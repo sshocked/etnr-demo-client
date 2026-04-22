@@ -1,46 +1,69 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X, CheckCircle, AlertTriangle, Search, FileText } from 'lucide-react'
-import { getItem } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus, STATUS_LABELS } from '../lib/constants'
-import type { DocRecord } from '../lib/constants'
+import { api } from '../lib/api'
 
 type ScanState = 'scanning' | 'found' | 'found_signed' | 'not_found'
 
-function formatAmount(v: number): string {
-  return v.toLocaleString('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 })
+interface DocItem {
+  id: string
+  number: string
+  type: string
+  status: string
+  senderName: string
+  updatedAt: string
+}
+
+interface DocumentsResponse {
+  documents: DocItem[]
+  nextCursor: string
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  need_sign: 'Требует подписи',
+  in_progress: 'В процессе',
+  signed: 'Подписан',
+  signed_with_reservations: 'Подписан с оговорками',
+  refused: 'Отказ',
+}
+
+function formatDate(iso: string): string {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
 export default function QrScannerPage() {
   const navigate = useNavigate()
   const [state, setState] = useState<ScanState>('scanning')
-  const [foundDoc, setFoundDoc] = useState<DocRecord | null>(null)
+  const [foundDoc, setFoundDoc] = useState<DocItem | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<DocRecord[]>([])
+  const [searchResults, setSearchResults] = useState<DocItem[]>([])
   const [searchPerformed, setSearchPerformed] = useState(false)
+  const [allDocs, setAllDocs] = useState<DocItem[]>([])
 
-  const allDocs = useMemo(() => getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? [], [])
+  useEffect(() => {
+    api.get<DocumentsResponse>('/documents', { limit: '50' })
+      .then(data => setAllDocs(data.documents ?? []))
+      .catch(() => {})
+  }, [])
 
-  // Fake scan: pick a random NEED_SIGN doc after 2.5s
+  // Fake scan: pick a random need_sign doc after 2.5s
   useEffect(() => {
     if (state !== 'scanning') return
 
     const timer = setTimeout(() => {
-      const needSign = allDocs.filter(d => d.status === DocumentStatus.NEED_SIGN)
+      const needSign = allDocs.filter(d => d.status === 'need_sign')
 
       if (needSign.length > 0) {
         const randomDoc = needSign[Math.floor(Math.random() * needSign.length)]
         setFoundDoc(randomDoc)
         setState('found')
+      } else if (allDocs.length > 0) {
+        const randomDoc = allDocs[Math.floor(Math.random() * allDocs.length)]
+        setFoundDoc(randomDoc)
+        setState(randomDoc.status === 'signed' ? 'found_signed' : 'found')
       } else {
-        // Try any doc at all for the scan demo
-        if (allDocs.length > 0) {
-          const randomDoc = allDocs[Math.floor(Math.random() * allDocs.length)]
-          setFoundDoc(randomDoc)
-          setState(randomDoc.status === DocumentStatus.SIGNED ? 'found_signed' : 'found')
-        } else {
-          setState('not_found')
-        }
+        setState('not_found')
       }
     }, 2500)
 
@@ -66,9 +89,9 @@ export default function QrScannerPage() {
     setSearchPerformed(true)
   }, [searchQuery, allDocs])
 
-  const selectSearchResult = useCallback((doc: DocRecord) => {
+  const selectSearchResult = useCallback((doc: DocItem) => {
     setFoundDoc(doc)
-    setState(doc.status === DocumentStatus.SIGNED ? 'found_signed' : 'found')
+    setState(doc.status === 'signed' ? 'found_signed' : 'found')
   }, [])
 
   const resetToScanning = useCallback(() => {
@@ -127,15 +150,15 @@ export default function QrScannerPage() {
                     <span className="text-white text-sm font-medium">{doc.number}</span>
                   </div>
                   <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    doc.status === DocumentStatus.SIGNED ? 'bg-green-500/20 text-green-400' :
-                    doc.status === DocumentStatus.NEED_SIGN ? 'bg-amber-500/20 text-amber-400' :
+                    doc.status === 'signed' ? 'bg-green-500/20 text-green-400' :
+                    doc.status === 'need_sign' ? 'bg-amber-500/20 text-amber-400' :
                     'bg-white/10 text-white/60'
                   }`}>
-                    {STATUS_LABELS[doc.status]}
+                    {STATUS_LABELS[doc.status] ?? doc.status}
                   </span>
                 </div>
                 <p className="text-white/50 text-xs mt-1 truncate">
-                  {doc.sender.name} &middot; {doc.route.from} &rarr; {doc.route.to}
+                  {doc.senderName} &middot; {formatDate(doc.updatedAt)}
                 </p>
               </button>
             ))}
@@ -159,18 +182,14 @@ export default function QrScannerPage() {
           <>
             {/* Viewfinder */}
             <div className="relative w-64 h-64">
-              {/* Corner brackets */}
               <div className="absolute top-0 left-0 w-8 h-8 border-t-3 border-l-3 border-white rounded-tl-lg" />
               <div className="absolute top-0 right-0 w-8 h-8 border-t-3 border-r-3 border-white rounded-tr-lg" />
               <div className="absolute bottom-0 left-0 w-8 h-8 border-b-3 border-l-3 border-white rounded-bl-lg" />
               <div className="absolute bottom-0 right-0 w-8 h-8 border-b-3 border-r-3 border-white rounded-br-lg" />
 
-              {/* Scanning line */}
               <div
                 className="absolute left-2 right-2 h-0.5 bg-gradient-to-r from-transparent via-green-400 to-transparent"
-                style={{
-                  animation: 'scanLine 2s ease-in-out infinite',
-                }}
+                style={{ animation: 'scanLine 2s ease-in-out infinite' }}
               />
             </div>
 
@@ -180,11 +199,9 @@ export default function QrScannerPage() {
           </>
         )}
 
-        {/* Found document (NEED_SIGN / IN_PROGRESS etc.) */}
         {state === 'found' && foundDoc && (
           <div className="w-full max-w-sm animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 overflow-hidden">
-              {/* Header */}
               <div className="px-5 pt-5 pb-3 border-b border-white/10">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0">
@@ -192,28 +209,22 @@ export default function QrScannerPage() {
                   </div>
                   <div className="min-w-0">
                     <p className="text-white font-semibold text-base">{foundDoc.number}</p>
-                    <p className="text-amber-400 text-xs font-medium">{STATUS_LABELS[foundDoc.status]}</p>
+                    <p className="text-amber-400 text-xs font-medium">{STATUS_LABELS[foundDoc.status] ?? foundDoc.status}</p>
                   </div>
                 </div>
               </div>
 
-              {/* Details */}
               <div className="px-5 py-4 space-y-3">
                 <div>
                   <p className="text-white/40 text-xs mb-0.5">Отправитель</p>
-                  <p className="text-white text-sm">{foundDoc.sender.name}</p>
+                  <p className="text-white text-sm">{foundDoc.senderName || '—'}</p>
                 </div>
                 <div>
-                  <p className="text-white/40 text-xs mb-0.5">Маршрут</p>
-                  <p className="text-white text-sm">{foundDoc.route.from} &rarr; {foundDoc.route.to}</p>
-                </div>
-                <div>
-                  <p className="text-white/40 text-xs mb-0.5">Сумма</p>
-                  <p className="text-white text-sm font-medium">{formatAmount(foundDoc.amount)}</p>
+                  <p className="text-white/40 text-xs mb-0.5">Обновлён</p>
+                  <p className="text-white text-sm">{formatDate(foundDoc.updatedAt)}</p>
                 </div>
               </div>
 
-              {/* Actions */}
               <div className="px-5 pb-5 flex gap-3">
                 <button
                   onClick={() => navigate(`/documents/${foundDoc.id}`)}
@@ -230,7 +241,6 @@ export default function QrScannerPage() {
               </div>
             </div>
 
-            {/* Scan again */}
             <button
               onClick={resetToScanning}
               className="w-full mt-3 py-3 rounded-xl bg-white/5 text-white/60 text-sm font-medium active:bg-white/10 transition-colors"
@@ -240,11 +250,9 @@ export default function QrScannerPage() {
           </div>
         )}
 
-        {/* Found document (already SIGNED) */}
         {state === 'found_signed' && foundDoc && (
           <div className="w-full max-w-sm animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-green-500/10 backdrop-blur-md rounded-2xl border border-green-500/20 overflow-hidden">
-              {/* Header */}
               <div className="px-5 pt-5 pb-3 border-b border-green-500/20">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0">
@@ -257,23 +265,17 @@ export default function QrScannerPage() {
                 </div>
               </div>
 
-              {/* Details */}
               <div className="px-5 py-4 space-y-3">
                 <div>
                   <p className="text-white/40 text-xs mb-0.5">Отправитель</p>
-                  <p className="text-white text-sm">{foundDoc.sender.name}</p>
+                  <p className="text-white text-sm">{foundDoc.senderName || '—'}</p>
                 </div>
                 <div>
-                  <p className="text-white/40 text-xs mb-0.5">Маршрут</p>
-                  <p className="text-white text-sm">{foundDoc.route.from} &rarr; {foundDoc.route.to}</p>
-                </div>
-                <div>
-                  <p className="text-white/40 text-xs mb-0.5">Сумма</p>
-                  <p className="text-white text-sm font-medium">{formatAmount(foundDoc.amount)}</p>
+                  <p className="text-white/40 text-xs mb-0.5">Обновлён</p>
+                  <p className="text-white text-sm">{formatDate(foundDoc.updatedAt)}</p>
                 </div>
               </div>
 
-              {/* Actions */}
               <div className="px-5 pb-5">
                 <button
                   onClick={() => navigate(`/documents/${foundDoc.id}`)}
@@ -284,7 +286,6 @@ export default function QrScannerPage() {
               </div>
             </div>
 
-            {/* Scan again */}
             <button
               onClick={resetToScanning}
               className="w-full mt-3 py-3 rounded-xl bg-white/5 text-white/60 text-sm font-medium active:bg-white/10 transition-colors"
@@ -319,7 +320,6 @@ export default function QrScannerPage() {
         )}
       </div>
 
-      {/* Bottom cancel button (scanning state only) */}
       {state === 'scanning' && (
         <div className="pb-12 flex justify-center">
           <button
@@ -331,7 +331,6 @@ export default function QrScannerPage() {
         </div>
       )}
 
-      {/* CSS animation */}
       <style>{`
         @keyframes scanLine {
           0%, 100% { top: 8px; }
