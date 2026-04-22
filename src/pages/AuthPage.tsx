@@ -227,14 +227,6 @@ export default function AuthPage() {
         deviceId,
       })
 
-      if (!getItem(STORAGE_KEYS.DOCUMENTS)) {
-        setItem(STORAGE_KEYS.DOCUMENTS, seedDocuments())
-        setItem(STORAGE_KEYS.ACTIVITY, seedActivity())
-        setItem(STORAGE_KEYS.SUBSCRIPTION, defaultSubscription)
-        setItem(STORAGE_KEYS.MCD, defaultMcds)
-        setItem(STORAGE_KEYS.TRIPS, seedTrips())
-      }
-
       const currentAuth = getItem<AuthStorage>(STORAGE_KEYS.AUTH) ?? {}
       setItem(STORAGE_KEYS.AUTH, {
         ...currentAuth,
