@@ -3,10 +3,8 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { CheckCircle, XCircle, Loader2, AlertTriangle, MapPin } from 'lucide-react'
 import Button from '../components/ui/Button'
 import ProgressSteps from '../components/ui/ProgressSteps'
-import { getItem, setItem, shouldSimulateError } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus } from '../lib/constants'
-import type { DocRecord, ActivityLogEntry, GeoLocation, Mcd } from '../lib/constants'
-import { generateId } from '../lib/utils'
+import type { GeoLocation } from '../lib/constants'
+import { api } from '../lib/api'
 
 const MOCK_ADDRESS = '\u041c\u043e\u0441\u043a\u0432\u0430, \u0443\u043b. \u0422\u0432\u0435\u0440\u0441\u043a\u0430\u044f, 12'
 const FALLBACK_LOCATION: GeoLocation = { lat: 55.7558, lng: 37.6173, address: '\u041c\u043e\u0441\u043a\u0432\u0430 (\u043f\u0440\u0438\u0431\u043b\u0438\u0437\u0438\u0442\u0435\u043b\u044c\u043d\u043e)' }
@@ -69,99 +67,51 @@ export default function SigningFlowPage() {
   }, [])
 
   useEffect(() => {
-    if (done || error) return
+    if (done || error || !id) return
 
-    const failStep = shouldSimulateError() ? (Math.random() < 0.5 ? 1 : 2) : -1
+    const geo = geoRef.current
 
-    const advance = (step: number) => {
-      if (step >= 3) {
-        const docs = getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? []
-        const now = new Date().toISOString()
-
-        // Найти МЧД, по которой подписывается документ (для записи в историю).
-        const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
-        const usedMcd = mcdNumber ? mcds.find(m => m.number === mcdNumber) : undefined
-        const mcdSuffix = usedMcd
-          ? ` (по МЧД ${usedMcd.number} от ${usedMcd.principal.companyName})`
-          : mcdNumber
-            ? ` (по МЧД ${mcdNumber})`
-            : ''
-
-        let newStatus: DocumentStatus
-        let historyAction: string
-        let historyDesc: string
-        let activityMsg: string
-
+    const run = async () => {
+      try {
         if (mode === 'refuse') {
-          newStatus = DocumentStatus.REFUSED
-          historyAction = 'rejected'
-          historyDesc = `Отказано в подписи: ${refuseReason}`
-          activityMsg = 'отклонён'
-        } else if (mode === 'reservations') {
-          newStatus = DocumentStatus.SIGNED_WITH_RESERVATIONS
-          historyAction = 'signed'
-          historyDesc = `Подписан с оговоркой: ${reservationsText}${mcdSuffix}`
-          activityMsg = 'подписан с оговоркой'
-        } else {
-          newStatus = DocumentStatus.SIGNED
-          historyAction = 'signed'
-          historyDesc = `Документ подписан электронной подписью${mcdSuffix}`
-          activityMsg = 'подписан'
+          setCurrentStep(0)
+          await api.post(`/documents/${id}/refuse`, { reason: refuseReason || 'Отказ' })
+          setCurrentStep(3)
+          setDone(true)
+          return
         }
 
-        const loc = geoRef.current
-        const updated = docs.map(d => {
-          if (d.id !== id) return d
-          return {
-            ...d,
-            status: newStatus,
-            signedAt: mode !== 'refuse' ? now : d.signedAt,
-            updatedAt: now,
-            signLocation: mode !== 'refuse' ? loc : d.signLocation,
-            reservations: mode === 'reservations' ? reservationsText : d.reservations,
-            history: [...d.history, {
-              id: generateId(),
-              timestamp: now,
-              action: historyAction as 'signed' | 'rejected',
-              actor: 'Вы',
-              description: historyDesc,
-              location: loc,
-            }],
-          }
+        // step 0 — init
+        setCurrentStep(0)
+        const apiMode = mode === 'reservations' ? 'sign_with_reservations' : 'sign'
+        const initResp = await api.post<{ signRequestId: string; requiredDigest: string }>(`/documents/${id}/sign/init`, {
+          mode: apiMode,
         })
-        setItem(STORAGE_KEYS.DOCUMENTS, updated)
 
-        const doc = docs.find(d => d.id === id)
-        if (doc) {
-          const activity = getItem<ActivityLogEntry[]>(STORAGE_KEYS.ACTIVITY) ?? []
-          activity.unshift({
-            id: generateId(),
-            timestamp: now,
-            type: mode === 'refuse' ? 'error' : 'sign',
-            documentId: doc.id,
-            documentNumber: doc.number,
-            message: `Документ ${doc.number} ${activityMsg}`,
-          })
-          setItem(STORAGE_KEYS.ACTIVITY, activity)
-        }
+        // step 1 — sign (demo: base64 of requiredDigest)
+        setCurrentStep(1)
+        const signature = btoa(initResp.requiredDigest)
 
-        setDone(true)
+        // step 2 — submit
+        setCurrentStep(2)
+        await api.post(`/documents/${id}/sign/submit`, {
+          signRequestId: initResp.signRequestId,
+          signature,
+          reservations: mode === 'reservations' ? reservationsText : undefined,
+          geoLat: geo.lat,
+          geoLon: geo.lng,
+        })
+
         setCurrentStep(3)
-        return
-      }
-
-      if (step === failStep) {
+        setDone(true)
+      } catch {
         setError(true)
-        return
       }
-
-      setCurrentStep(step)
-      setTimeout(() => advance(step + 1), 1200 + Math.random() * 800)
     }
 
-    const timer = setTimeout(() => advance(0), 500)
+    const timer = setTimeout(run, 500)
     return () => clearTimeout(timer)
-  }, [id, done, error, mode, reservationsText, refuseReason, mcdNumber])
+  }, [id, done, error, mode, reservationsText, refuseReason])
 
   const handleRetry = () => {
     setError(false)

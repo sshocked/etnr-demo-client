@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, FileText, ChevronRight, Archive, Download, X } from 'lucide-react'
 import Card from '../components/ui/Card'
@@ -6,11 +6,11 @@ import Badge from '../components/ui/Badge'
 import Button from '../components/ui/Button'
 import { SkeletonCard } from '../components/ui/Skeleton'
 import EmptyState from '../components/ui/EmptyState'
-import { getItem, simulateDelay } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus, DOC_TYPE_LABELS, STATUS_LABELS } from '../lib/constants'
-import type { DocRecord } from '../lib/constants'
-import { formatDate, formatMoney } from '../lib/utils'
+import { DocumentStatus, DOC_TYPE_LABELS, STATUS_LABELS, type DocRecord } from '../lib/constants'
+import { formatDate } from '../lib/utils'
 import { useToast } from '../components/ui/Toast'
+import { api } from '../lib/api'
+import { type DocumentsListResponse, normalizeListDocument } from '../lib/documents'
 
 export default function ArchivePage() {
   const navigate = useNavigate()
@@ -19,108 +19,83 @@ export default function ArchivePage() {
   const [docs, setDocs] = useState<DocRecord[]>([])
   const [search, setSearch] = useState('')
   const [showExport, setShowExport] = useState(false)
-  const [exportFormat, setExportFormat] = useState<'csv' | 'xml'>('csv')
   const [exportFrom, setExportFrom] = useState('')
   const [exportTo, setExportTo] = useState('')
-  const [exportInclude, setExportInclude] = useState({ amounts: true, routes: true, driver: true })
   const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
-    (async () => {
-      await simulateDelay()
-      const all = getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? []
-      setDocs(all.filter(d => d.status === DocumentStatus.SIGNED || d.status === DocumentStatus.SIGNED_WITH_RESERVATIONS))
-      setLoading(false)
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const response = await api.get<DocumentsListResponse>('/documents', {
+          status: 'SIGNED,REFUSED',
+          limit: 100,
+        })
+        if (cancelled) return
+        setDocs((response.items ?? []).map(normalizeListDocument))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     })()
 
-    // Default export period: current month
     const now = new Date()
     setExportFrom(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
     setExportTo(now.toISOString().split('T')[0])
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const filtered = useMemo(() => {
     if (!search.trim()) return docs
-    const q = search.toLowerCase()
-    return docs.filter(d => d.number.toLowerCase().includes(q) || d.sender.name.toLowerCase().includes(q))
+    const query = search.toLowerCase()
+    return docs.filter(doc => doc.number.toLowerCase().includes(query) || doc.sender.name.toLowerCase().includes(query))
   }, [docs, search])
 
   const handleExport = () => {
     setExporting(true)
-    setTimeout(() => {
-      // Filter docs by date range
+
+    window.setTimeout(() => {
       let exportDocs = docs
+
       if (exportFrom) {
         const from = new Date(exportFrom)
         from.setHours(0, 0, 0, 0)
-        exportDocs = exportDocs.filter(d => new Date(d.signedAt || d.updatedAt) >= from)
+        exportDocs = exportDocs.filter(doc => new Date(doc.signedAt || doc.updatedAt) >= from)
       }
+
       if (exportTo) {
         const to = new Date(exportTo)
         to.setHours(23, 59, 59, 999)
-        exportDocs = exportDocs.filter(d => new Date(d.signedAt || d.updatedAt) <= to)
+        exportDocs = exportDocs.filter(doc => new Date(doc.signedAt || doc.updatedAt) <= to)
       }
 
-      if (exportFormat === 'csv') {
-        // Build CSV
-        const headers = ['№', 'Номер документа', 'Дата подписания', 'Отправитель', 'Получатель', 'Статус']
-        if (exportInclude.routes) headers.push('Маршрут')
-        if (exportInclude.amounts) headers.push('Сумма')
-        if (exportInclude.driver) headers.push('Водитель', 'Гос. номер')
+      const headers = ['№', 'Номер документа', 'Дата', 'Отправитель', 'Получатель', 'Статус']
+      const rows = exportDocs.map((doc, index) => [
+        String(index + 1),
+        doc.number,
+        formatDate(doc.signedAt || doc.updatedAt),
+        doc.sender.name,
+        doc.receiver.name,
+        STATUS_LABELS[doc.status],
+      ].map(value => `"${value}"`).join(';'))
 
-        const rows = exportDocs.map((d, i) => {
-          const row: string[] = [
-            String(i + 1),
-            d.number,
-            formatDate(d.signedAt || d.updatedAt),
-            d.sender.name,
-            d.receiver.name,
-            STATUS_LABELS[d.status],
-          ]
-          if (exportInclude.routes) row.push(`${d.route.from} → ${d.route.to}`)
-          if (exportInclude.amounts) row.push(formatMoney(d.amount))
-          if (exportInclude.driver) { row.push(d.driver.name); row.push(d.driver.vehiclePlate) }
-          return row.map(v => `"${v}"`).join(';')
-        })
-
-        const bom = '\uFEFF'
-        const csv = bom + headers.join(';') + '\n' + rows.join('\n')
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `etrn_reestr_${exportFrom}_${exportTo}.csv`
-        a.click()
-        URL.revokeObjectURL(url)
-      } else {
-        // XML for 1C
-        const xmlRows = exportDocs.map(d => `  <Document>
-    <Number>${d.number}</Number>
-    <Date>${d.signedAt || d.updatedAt}</Date>
-    <Sender>${d.sender.name}</Sender>
-    <SenderINN>${d.sender.inn}</SenderINN>
-    <Receiver>${d.receiver.name}</Receiver>
-    <ReceiverINN>${d.receiver.inn}</ReceiverINN>
-    <Route>${d.route.from} - ${d.route.to}</Route>
-    <Amount>${d.amount}</Amount>
-    <Status>${STATUS_LABELS[d.status]}</Status>
-    <Driver>${d.driver.name}</Driver>
-    <Vehicle>${d.driver.vehiclePlate}</Vehicle>
-  </Document>`).join('\n')
-        const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<Registry date="${new Date().toISOString()}">\n${xmlRows}\n</Registry>`
-        const blob = new Blob([xml], { type: 'application/xml;charset=utf-8' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `etrn_reestr_${exportFrom}_${exportTo}.xml`
-        a.click()
-        URL.revokeObjectURL(url)
-      }
+      const bom = '\uFEFF'
+      const csv = bom + headers.join(';') + '\n' + rows.join('\n')
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `etrn_archive_${exportFrom}_${exportTo}.csv`
+      anchor.click()
+      URL.revokeObjectURL(url)
 
       setExporting(false)
       setShowExport(false)
       toast('Реестр выгружен', 'success')
-    }, 1500)
+    }, 300)
   }
 
   if (loading) {
@@ -167,7 +142,7 @@ export default function ArchivePage() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">{doc.number}</p>
-                  <Badge variant={doc.status === DocumentStatus.SIGNED_WITH_RESERVATIONS ? 'warning' : 'success'}>
+                  <Badge variant={doc.status === DocumentStatus.REFUSED ? 'error' : 'success'}>
                     {STATUS_LABELS[doc.status]}
                   </Badge>
                 </div>
@@ -180,7 +155,6 @@ export default function ArchivePage() {
         </div>
       )}
 
-      {/* Export bottom sheet */}
       {showExport && (
         <div className="fixed inset-0 z-50 flex items-end" onClick={() => setShowExport(false)}>
           <div className="absolute inset-0 bg-black/40" />
@@ -193,24 +167,6 @@ export default function ArchivePage() {
               </button>
             </div>
 
-            {/* Format */}
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Формат</p>
-            <div className="flex gap-2 mb-4">
-              <button
-                onClick={() => setExportFormat('csv')}
-                className={`flex-1 py-3 rounded-xl text-sm font-medium transition-colors ${exportFormat === 'csv' ? 'bg-brand-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300'}`}
-              >
-                Excel (.csv)
-              </button>
-              <button
-                onClick={() => setExportFormat('xml')}
-                className={`flex-1 py-3 rounded-xl text-sm font-medium transition-colors ${exportFormat === 'xml' ? 'bg-brand-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300'}`}
-              >
-                1С (.xml)
-              </button>
-            </div>
-
-            {/* Date range */}
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Период</p>
             <div className="flex gap-2 mb-4">
               <div className="flex-1">
@@ -223,29 +179,8 @@ export default function ArchivePage() {
               </div>
             </div>
 
-            {/* Include options (CSV only) */}
-            {exportFormat === 'csv' && (
-              <>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Включить</p>
-                <div className="space-y-2 mb-4">
-                  {([['amounts', 'Суммы'], ['routes', 'Маршруты'], ['driver', 'Данные водителя']] as const).map(([key, label]) => (
-                    <label key={key} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gray-50 dark:bg-gray-800/50">
-                      <input
-                        type="checkbox"
-                        checked={exportInclude[key]}
-                        onChange={e => setExportInclude(prev => ({ ...prev, [key]: e.target.checked }))}
-                        className="w-5 h-5 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
-                      />
-                      <span className="text-sm text-gray-700 dark:text-gray-300">{label}</span>
-                    </label>
-                  ))}
-                </div>
-              </>
-            )}
-
             <Button fullWidth size="lg" loading={exporting} onClick={handleExport}>
-              <Download className="h-4 w-4 mr-2" />
-              Скачать
+              Выгрузить CSV
             </Button>
           </div>
         </div>

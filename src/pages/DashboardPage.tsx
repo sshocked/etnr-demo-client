@@ -1,14 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FileSignature, Clock, Archive, FileText, CheckCircle, AlertTriangle, Eye, ChevronRight, Inbox, Shield, KeyRound, BarChart3, QrCode, UserCheck } from 'lucide-react'
+import { FileSignature, Clock, Archive, FileText, CheckCircle, AlertTriangle, Eye, ChevronRight, Inbox, Shield, KeyRound, BarChart3, QrCode } from 'lucide-react'
 import Card from '../components/ui/Card'
 import { SkeletonCard } from '../components/ui/Skeleton'
 import Skeleton from '../components/ui/Skeleton'
 import { getItem } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus } from '../lib/constants'
-import type { DocRecord, ActivityLogEntry, UserProfile, Certificate, Mcd } from '../lib/constants'
+import { STORAGE_KEYS } from '../lib/constants'
+import type { ActivityLogEntry, UserProfile, Certificate, Mcd } from '../lib/constants'
 import { formatDateTime } from '../lib/utils'
-import { simulateDelay } from '../lib/storage'
+import { api } from '../lib/api'
+import { type DocumentCountsApi, normalizeCounts } from '../lib/documents'
 
 const activityIcons = {
   sign: CheckCircle,
@@ -27,59 +28,76 @@ const activityColors = {
 export default function DashboardPage() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
-  const [docs, setDocs] = useState<DocRecord[]>([])
+  const [counts, setCounts] = useState(() => normalizeCounts(undefined))
   const [activity, setActivity] = useState<ActivityLogEntry[]>([])
 
   useEffect(() => {
-    (async () => {
-      await simulateDelay()
-      setDocs(getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? [])
-      setActivity(getItem<ActivityLogEntry[]>(STORAGE_KEYS.ACTIVITY) ?? [])
-      setLoading(false)
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const [countsResponse] = await Promise.all([
+          api.get<DocumentCountsApi>('/documents/counts'),
+        ])
+
+        if (cancelled) return
+        setCounts(normalizeCounts(countsResponse))
+        setActivity(getItem<ActivityLogEntry[]>(STORAGE_KEYS.ACTIVITY) ?? [])
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     })()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const user = getItem<UserProfile>(STORAGE_KEYS.USER)
   const cert = getItem<Certificate>(STORAGE_KEYS.CERTIFICATE)
   const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
 
-  // Expiry warnings
-  const now = new Date()
-  const warnings: { icon: typeof AlertTriangle; color: string; bg: string; text: string; action: string }[] = []
+  const warnings = useMemo(() => {
+    const now = new Date()
+    const result: { icon: typeof AlertTriangle; color: string; bg: string; text: string; action: string }[] = []
 
-  if (!cert || cert.status !== 'active') {
-    warnings.push({ icon: KeyRound, color: 'text-red-600', bg: 'bg-red-50', text: 'Сертификат УКЭП не выпущен. Выпустите для подписания.', action: '/cert-issue' })
-  } else if (cert.validTo) {
-    const daysLeft = Math.ceil((new Date(cert.validTo).getTime() - now.getTime()) / 86400000)
-    if (daysLeft <= 30 && daysLeft > 0) {
-      warnings.push({ icon: KeyRound, color: 'text-orange-600', bg: 'bg-orange-50', text: `Сертификат УКЭП истекает через ${daysLeft} дн.`, action: '/cert-issue' })
-    } else if (daysLeft <= 0) {
-      warnings.push({ icon: KeyRound, color: 'text-red-600', bg: 'bg-red-50', text: 'Сертификат УКЭП истёк. Обновите сертификат.', action: '/cert-issue' })
+    if (!cert || cert.status !== 'active') {
+      result.push({ icon: KeyRound, color: 'text-red-600', bg: 'bg-red-50', text: 'Сертификат УКЭП не выпущен. Выпустите для подписания.', action: '/cert-issue' })
+    } else if (cert.validTo) {
+      const daysLeft = Math.ceil((new Date(cert.validTo).getTime() - now.getTime()) / 86400000)
+      if (daysLeft <= 30 && daysLeft > 0) {
+        result.push({ icon: KeyRound, color: 'text-orange-600', bg: 'bg-orange-50', text: `Сертификат УКЭП истекает через ${daysLeft} дн.`, action: '/cert-issue' })
+      } else if (daysLeft <= 0) {
+        result.push({ icon: KeyRound, color: 'text-red-600', bg: 'bg-red-50', text: 'Сертификат УКЭП истёк. Обновите сертификат.', action: '/cert-issue' })
+      }
     }
-  }
 
-  const expiringMcds = mcds.filter(m => {
-    if (!m.validUntil || m.status !== 'linked') return false
-    const daysLeft = Math.ceil((new Date(m.validUntil).getTime() - now.getTime()) / 86400000)
-    return daysLeft <= 30
-  })
-  if (expiringMcds.length > 0) {
-    const m = expiringMcds[0]
-    const daysLeft = Math.ceil((new Date(m.validUntil!).getTime() - now.getTime()) / 86400000)
-    if (daysLeft <= 0) {
-      warnings.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: `МЧД от ${m.principal.companyName} истекла`, action: '/profile' })
-    } else {
-      warnings.push({ icon: Shield, color: 'text-orange-600', bg: 'bg-orange-50', text: `МЧД от ${m.principal.companyName} истекает через ${daysLeft} дн.`, action: '/profile' })
+    const expiringMcds = mcds.filter(mcd => {
+      if (!mcd.validUntil || mcd.status !== 'linked') return false
+      const daysLeft = Math.ceil((new Date(mcd.validUntil).getTime() - now.getTime()) / 86400000)
+      return daysLeft <= 30
+    })
+
+    if (expiringMcds.length > 0) {
+      const mcd = expiringMcds[0]
+      const daysLeft = Math.ceil((new Date(mcd.validUntil!).getTime() - now.getTime()) / 86400000)
+      if (daysLeft <= 0) {
+        result.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: `МЧД от ${mcd.principal.companyName} истекла`, action: '/profile' })
+      } else {
+        result.push({ icon: Shield, color: 'text-orange-600', bg: 'bg-orange-50', text: `МЧД от ${mcd.principal.companyName} истекает через ${daysLeft} дн.`, action: '/profile' })
+      }
     }
-  }
 
-  if (mcds.length === 0 || mcds.every(m => m.status === 'none')) {
-    warnings.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: 'МЧД не привязана. Загрузите для подписания.', action: '/mcd' })
-  }
+    if (mcds.length === 0 || mcds.every(mcd => mcd.status === 'none')) {
+      result.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: 'МЧД не привязана. Загрузите для подписания.', action: '/mcd' })
+    }
 
-  const needSign = docs.filter(d => d.status === DocumentStatus.NEED_SIGN).length
-  const inProgress = docs.filter(d => d.status === DocumentStatus.IN_PROGRESS).length
-  const signed = docs.filter(d => d.status === DocumentStatus.SIGNED || d.status === DocumentStatus.SIGNED_WITH_RESERVATIONS).length
+    return result
+  }, [cert, mcds])
+
+  const needSign = counts.NEED_SIGN
+  const inProgress = counts.IN_PROGRESS
+  const signed = counts.SIGNED + counts.SIGNED_WITH_RESERVATIONS + counts.REFUSED
 
   if (loading) {
     return (
@@ -97,38 +115,33 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 space-y-5">
-      {/* Greeting */}
       <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 truncate">
         {(() => {
           const name = user?.name?.trim() ?? ''
           if (!name) return 'Привет!'
-          // Берём имя (второе слово ФИО) или фамилию, если имени нет
           const parts = name.split(/\s+/).filter(Boolean)
           const firstName = parts[1] || parts[0] || ''
-          // Ограничиваем длину — защита от длинных названий
           const display = firstName.length > 30 ? firstName.slice(0, 28) + '…' : firstName
           return `${display}, привет!`
         })()}
       </h2>
 
-      {/* Expiry warnings */}
       {warnings.length > 0 && (
         <div className="space-y-2">
-          {warnings.map((w, i) => (
+          {warnings.map((warning, index) => (
             <button
-              key={i}
-              onClick={() => navigate(w.action)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl ${w.bg} dark:bg-opacity-20 active:scale-[0.98] transition-all duration-200`}
+              key={index}
+              onClick={() => navigate(warning.action)}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl ${warning.bg} dark:bg-opacity-20 active:scale-[0.98] transition-all duration-200`}
             >
-              <w.icon className={`h-5 w-5 ${w.color} shrink-0`} />
-              <p className={`text-sm font-medium ${w.color} text-left flex-1`}>{w.text}</p>
-              <ChevronRight className={`h-4 w-4 ${w.color} shrink-0 opacity-50`} />
+              <warning.icon className={`h-5 w-5 ${warning.color} shrink-0`} />
+              <p className={`text-sm font-medium ${warning.color} text-left flex-1`}>{warning.text}</p>
+              <ChevronRight className={`h-4 w-4 ${warning.color} shrink-0 opacity-50`} />
             </button>
           ))}
         </div>
       )}
 
-      {/* Primary action — documents to sign */}
       {needSign > 0 ? (
         <div className="w-full bg-gradient-to-r from-brand-600 to-brand-700 rounded-2xl p-5 text-white shadow-lg">
           <button
@@ -151,13 +164,10 @@ export default function DashboardPage() {
             </div>
           </button>
           <button
-            onClick={() => {
-              const needSignIds = docs.filter(d => d.status === DocumentStatus.NEED_SIGN).map(d => d.id)
-              navigate(`/documents/bulk-sign?ids=${needSignIds.join(',')}`)
-            }}
+            onClick={() => navigate('/documents?status=NEED_SIGN')}
             className="w-full mt-3 py-2.5 rounded-xl bg-white/20 text-white text-sm font-medium active:bg-white/30 transition-colors"
           >
-            Подписать все
+            Открыть документы
           </button>
         </div>
       ) : (
@@ -168,43 +178,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Assigned to you */}
-      {(() => {
-        const assignedDocs = docs.filter(d => d.assignedTo === user?.name && d.status === DocumentStatus.NEED_SIGN)
-        if (assignedDocs.length === 0) return null
-        return (
-          <Card className="!p-4">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
-                <UserCheck className="h-5 w-5 text-blue-600" />
-              </div>
-              <div className="flex-1">
-                <p className="text-base font-semibold text-gray-900 dark:text-gray-100">Назначено вам</p>
-                <p className="text-sm text-gray-500 dark:text-gray-400">{assignedDocs.length} {assignedDocs.length === 1 ? 'документ' : assignedDocs.length < 5 ? 'документа' : 'документов'}</p>
-              </div>
-            </div>
-            <div className="space-y-2">
-              {assignedDocs.slice(0, 3).map(d => (
-                <button key={d.id} onClick={() => navigate(`/documents/${d.id}`)} className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl bg-blue-50/50 dark:bg-blue-900/20 active:bg-blue-100 dark:active:bg-blue-900/30 transition-colors text-left">
-                  <FileText className="h-4 w-4 text-blue-500 dark:text-blue-400 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{d.number}</p>
-                    <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{d.sender.name} · {d.route.from} → {d.route.to}</p>
-                  </div>
-                  <ChevronRight className="h-4 w-4 text-gray-300 shrink-0" />
-                </button>
-              ))}
-            </div>
-            {assignedDocs.length > 3 && (
-              <button onClick={() => navigate('/documents?assigned=true')} className="w-full mt-2 text-sm text-brand-600 font-medium py-1">
-                Показать все
-              </button>
-            )}
-          </Card>
-        )
-      })()}
-
-      {/* Secondary stats */}
       <div className="grid grid-cols-2 gap-3">
         <Card onClick={() => navigate('/documents?status=IN_PROGRESS')} className="text-center !py-4">
           <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center mx-auto mb-2">
@@ -222,7 +195,6 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Stats link */}
       <Card onClick={() => navigate('/stats')} className="flex items-center gap-3 !p-4">
         <div className="w-12 h-12 rounded-2xl bg-brand-50 flex items-center justify-center shrink-0">
           <BarChart3 className="h-6 w-6 text-brand-600" />
@@ -234,7 +206,17 @@ export default function DashboardPage() {
         <ChevronRight className="h-5 w-5 text-gray-300 shrink-0" />
       </Card>
 
-      {/* Recent activity */}
+      <Card onClick={() => navigate('/scan')} className="flex items-center gap-3 !p-4">
+        <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center shrink-0">
+          <QrCode className="h-6 w-6 text-gray-700 dark:text-gray-200" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-base font-semibold text-gray-900 dark:text-gray-100">Сканер QR</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">Открыть документ по коду</p>
+        </div>
+        <ChevronRight className="h-5 w-5 text-gray-300 shrink-0" />
+      </Card>
+
       <div>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Последние действия</h2>
@@ -251,34 +233,25 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="space-y-2">
-            {activity.slice(0, 5).map(a => {
-              const Icon = activityIcons[a.type]
-              const color = activityColors[a.type]
+            {activity.slice(0, 5).map(item => {
+              const Icon = activityIcons[item.type]
+              const color = activityColors[item.type]
               return (
-                <Card key={a.id} onClick={() => navigate(`/documents/${a.documentId}`)} className="flex items-center gap-3 !p-3.5">
+                <Card key={item.id} onClick={() => navigate(`/documents/${item.documentId}`)} className="flex items-center gap-3 !p-3.5">
                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${color}`}>
                     <Icon className="h-5 w-5" />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-gray-800 dark:text-gray-200 truncate">{a.message}</p>
-                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{formatDateTime(a.timestamp)}</p>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{item.documentNumber}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{item.message}</p>
                   </div>
-                  <ChevronRight className="h-5 w-5 text-gray-300 shrink-0" />
+                  <p className="text-[11px] text-gray-400 shrink-0">{formatDateTime(item.timestamp)}</p>
                 </Card>
               )
             })}
           </div>
         )}
       </div>
-
-      {/* QR Scanner FAB */}
-      <button
-        onClick={() => navigate('/scan')}
-        className="fixed bottom-24 right-4 z-20 w-14 h-14 rounded-full bg-brand-600 text-white shadow-[0_4px_14px_rgba(124,58,237,0.4)] flex items-center justify-center active:bg-brand-700 active:scale-90 transition-all duration-200"
-        aria-label="Сканировать QR-код"
-      >
-        <QrCode className="h-6 w-6" />
-      </button>
     </div>
   )
 }
