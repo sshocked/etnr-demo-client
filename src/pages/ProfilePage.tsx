@@ -11,6 +11,7 @@ import { STORAGE_KEYS, SUB_STATUS_LABELS, MCD_STATUS_LABELS, EDO_OPERATORS } fro
 import type { UserProfile, Subscription, Mcd, Certificate } from '../lib/constants'
 import { formatDate, cn } from '../lib/utils'
 import { api, type ApiError } from '../lib/api'
+import { mapBillingStatusToSubscription, type BillingStatusResponse } from '../lib/billing'
 
 const subBadgeVariant: Record<string, 'success' | 'error' | 'warning'> = {
   active: 'success', expired: 'error', unpaid: 'warning',
@@ -71,9 +72,9 @@ export default function ProfilePage() {
   const navigate = useNavigate()
   const { toast } = useToast()
   const [storedUser] = useState<StoredUserProfile | null>(() => getItem<StoredUserProfile>(STORAGE_KEYS.USER))
-  const subscription = getItem<Subscription>(STORAGE_KEYS.SUBSCRIPTION)
   const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
   const [user, setUser] = useState<StoredUserProfile | null>(storedUser)
+  const [subscription, setSubscription] = useState<Subscription | null>(null)
   const storedUserRef = useRef(storedUser)
   const cert = getItem<Certificate>(STORAGE_KEYS.CERTIFICATE) ?? user?.certificate
   const [mcdLoading, setMcdLoading] = useState<number | null>(null)
@@ -96,11 +97,17 @@ export default function ProfilePage() {
       setProfileError('')
 
       try {
-        const remoteUser = await api.get<AuthMeResponse>('/auth/me')
+        const [remoteUser, billingStatus] = await Promise.all([
+          api.get<AuthMeResponse>('/auth/me'),
+          api.get<BillingStatusResponse>('/billing/status'),
+        ])
         if (cancelled) return
 
         const nextUser = mergeRemoteUser(remoteUser, storedUserRef.current)
+        const nextSubscription = mapBillingStatusToSubscription(billingStatus, nextUser.company, nextUser.inn)
+
         setUser(nextUser)
+        setSubscription(nextSubscription)
         setItem(STORAGE_KEYS.USER, nextUser)
         setForm({
           name: remoteUser.name ?? '',

@@ -1,25 +1,53 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { CreditCard, Smartphone, CheckCircle } from 'lucide-react'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Card from '../components/ui/Card'
 import { useToast } from '../components/ui/Toast'
-import { getItem, setItem } from '../lib/storage'
-import { STORAGE_KEYS } from '../lib/constants'
-import type { Subscription } from '../lib/constants'
 import { cn } from '../lib/utils'
+import { api, type ApiError } from '../lib/api'
+import type { BillingStatusResponse } from '../lib/billing'
 
 export default function PaymentPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
-  const sub = getItem<Subscription>(STORAGE_KEYS.SUBSCRIPTION)
   const [tab, setTab] = useState<'card' | 'sbp'>('card')
   const [loading, setLoading] = useState(false)
-  const [success, setSuccess] = useState(false)
+  const [billingStatus, setBillingStatus] = useState<BillingStatusResponse | null>(null)
+  const [statusLoading, setStatusLoading] = useState(true)
 
-  // If subscription is already active, show info
-  if (sub?.status === 'active' && !success) {
+  useEffect(() => {
+    let cancelled = false
+
+    const loadBillingStatus = async () => {
+      setStatusLoading(true)
+
+      try {
+        const status = await api.get<BillingStatusResponse>('/billing/status')
+        if (!cancelled) {
+          setBillingStatus(status)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const apiError = error as ApiError
+          toast(apiError.message || 'Не удалось загрузить статус подписки', 'error')
+        }
+      } finally {
+        if (!cancelled) {
+          setStatusLoading(false)
+        }
+      }
+    }
+
+    void loadBillingStatus()
+
+    return () => {
+      cancelled = true
+    }
+  }, [toast])
+
+  if (billingStatus?.package?.status === 'active') {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 min-h-[calc(100vh-56px)]">
         <div className="w-20 h-20 rounded-full bg-green-50 dark:bg-green-900/20 flex items-center justify-center mb-6">
@@ -32,34 +60,33 @@ export default function PaymentPage() {
     )
   }
 
-  const handlePay = () => {
+  const handlePay = async () => {
     setLoading(true)
-    setTimeout(() => {
-      const sub = getItem<Subscription>(STORAGE_KEYS.SUBSCRIPTION)
-      if (sub) {
-        setItem(STORAGE_KEYS.SUBSCRIPTION, { ...sub, status: 'active' })
-      }
-      setLoading(false)
-      setSuccess(true)
-      toast('Оплата прошла успешно (демо)', 'success')
-    }, 2000)
-  }
 
-  if (success) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center px-6 min-h-[calc(100vh-56px)]">
-        <div className="w-20 h-20 rounded-full bg-green-50 dark:bg-green-900/20 flex items-center justify-center mb-6 scale-in">
-          <CheckCircle className="h-10 w-10 text-green-500" />
-        </div>
-        <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-2">Оплата прошла!</h2>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-8">Подписка активирована</p>
-        <Button fullWidth onClick={() => navigate('/profile')}>Вернуться в профиль</Button>
-      </div>
-    )
+    try {
+      const resp = await api.post<{ paymentUrl?: string }>('/billing/checkout', { packageId: 'basic' })
+
+      if (resp.paymentUrl) {
+        window.location.href = resp.paymentUrl
+        return
+      }
+
+      toast('Оплата оформлена', 'success')
+      navigate('/profile')
+    } catch (error) {
+      const apiError = error as ApiError
+      toast(apiError.message || 'Не удалось оформить оплату', 'error')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
     <div className="p-4 space-y-4">
+      {statusLoading && (
+        <p className="text-sm text-center text-gray-500 dark:text-gray-400">Проверяем статус подписки...</p>
+      )}
+
       {/* Tab switcher */}
       <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
         {[
@@ -110,7 +137,7 @@ export default function PaymentPage() {
         </Card>
       )}
 
-      <p className="text-xs text-center text-gray-400 dark:text-gray-500">Это демо-версия. Реальная оплата не производится.</p>
+      <p className="text-xs text-center text-gray-400 dark:text-gray-500">После оформления вы будете перенаправлены на страницу оплаты.</p>
     </div>
   )
 }

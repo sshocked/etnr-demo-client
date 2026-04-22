@@ -5,6 +5,7 @@ import type { AppNotification, NotificationType } from '../lib/constants'
 import { cn } from '../lib/utils'
 import { api } from '../lib/api'
 import { emitNotificationsUpdated, mapNotification, type NotificationsResponse } from '../lib/notifications'
+import { useSse } from '../lib/useSse'
 import Button from '../components/ui/Button'
 import EmptyState from '../components/ui/EmptyState'
 
@@ -81,6 +82,16 @@ export default function NotificationsPage() {
   }, [])
 
   const unreadCount = notifications.filter((n) => !n.read).length
+
+  // SSE: refresh unread count when server emits counts.updated
+  useSse('/notifications/events', useCallback((event: MessageEvent) => {
+    if (event.type === 'notifications.counts.updated') {
+      // Reload notifications to get fresh data
+      api.get<NotificationsResponse>('/notifications').then(data => {
+        setNotifications((data.notifications ?? []).map(mapNotification))
+      }).catch(() => {})
+    }
+  }, []))
 
   const markAllRead = useCallback(async () => {
     try {

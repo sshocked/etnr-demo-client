@@ -13,6 +13,7 @@ import { formatDate, cn } from '../lib/utils'
 import { api } from '../lib/api'
 import { type DocumentsListResponse, normalizeListDocument } from '../lib/documents'
 import { refuseDocument, signDocument } from '../lib/documentSigning'
+import { useSse } from '../lib/useSse'
 
 const statusFilters: { label: string; value: string }[] = [
   { label: 'Все', value: 'ALL' },
@@ -176,6 +177,13 @@ export default function DocumentListPage() {
   useEffect(() => {
     reload()
   }, [reload])
+
+  // SSE: reload when server notifies about new/updated documents
+  useSse('/documents/events', useCallback((event: MessageEvent) => {
+    if (event.type === 'document.received' || event.type === 'document.updated') {
+      reload()
+    }
+  }, [reload]))
 
   useEffect(() => {
     syncParams()
