@@ -61,6 +61,20 @@ export function useSse(path: string, onEvent: (event: MessageEvent) => void): vo
 
       eventSource = new EventSource(buildSseUrl(path))
       eventSource.onmessage = (event) => {
+        // BFF sends: data: {"event":"event.name","data":{...}}
+        // We re-emit as a synthetic event with event.type = event.name
+        try {
+          const parsed = JSON.parse(event.data) as { event?: string; data?: unknown }
+          if (parsed.event) {
+            const synthetic = new MessageEvent(parsed.event, {
+              data: JSON.stringify(parsed.data ?? {}),
+            })
+            onEventRef.current(synthetic)
+            return
+          }
+        } catch {
+          // not a structured event, fall through
+        }
         onEventRef.current(event)
       }
       eventSource.onerror = () => {
