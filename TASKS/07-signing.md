@@ -1,27 +1,39 @@
-# Task 07 — Signing flow (после бэкенда Task 07)
+# Task 07 — Signing flow
 
-## Бэкенд endpoints
-- `POST /documents/:docId/sign/init` body: `{mode, mcdId?, certificateId}` → `{signRequestId, nonce, requiredDigest, mcd?, certificate}`
-- `POST /documents/:docId/sign/submit` body: `{signRequestId, signature, geoLocation?}` → `{jobId}`
-- `POST /documents/:docId/refuse` body: `{reason}` → `204`
-- `POST /documents/bulk-sign` body: `{documentIds[], mode, mcdId?, certificateId}` → `{batchId, items[], skipped[]}`
-- `GET /signing/jobs/:jobId` → `{status, steps[]}`
+## Бэкенд endpoints (фактические, через BFF)
+
+- `POST /documents/:id/sign/init`
+  body: `{ mode: "sign"|"sign_with_reservations"|"refuse", mcdId?: string, certificateId?: string }`
+  response: `{ signRequestId, nonce, requiredDigest, mcdId, mcdNumber, certificateId }`
+
+- `POST /documents/:id/sign/submit`
+  body: `{ signRequestId, signature, reservations?: string, geoLat?: number, geoLon?: number }`
+  response: `{ status: "submitted" }`
+
+- `POST /documents/:id/refuse`
+  body: `{ reason: string }`
+  response: 204 No Content
 
 ## Что изменить
 
-### src/pages/DocumentSignPage.tsx
-1. init → получить requiredDigest
-2. В demo-режиме (без КЭП): подписать = echo signature (base64 nonce)
-3. submit с подписью
-4. Poll /signing/jobs/:jobId до completed/failed
+### src/pages/DocumentListPage.tsx или DocumentDetailPage
+1. Добавить кнопки "Подписать" и "Отказать" для документов с requiresSign=true
+2. При клике "Подписать":
+   - Вызвать `api.post('/documents/:id/sign/init', { mode: "sign" })`
+   - Получить `{ signRequestId, requiredDigest }`
+   - Demo-подпись: `btoa(requiredDigest)` (base64 от requiredDigest)
+   - Вызвать `api.post('/documents/:id/sign/submit', { signRequestId, signature: btoa(requiredDigest) })`
+   - Показать уведомление "Документ подписан"
+3. При клике "Отказать":
+   - Показать модальное окно с полем "Причина отказа"
+   - Вызвать `api.post('/documents/:id/refuse', { reason })`
+   - Показать уведомление "Отказ отправлен"
+4. После успеха — обновить список документов
 
-### src/pages/BulkSignPage.tsx
-Аналогично, bulk endpoint.
+## API helper (src/lib/api.ts)
+Использовать `api.post<T>(path, body)` для всех вызовов.
 
-## МЧД auto-pick
-Перед sign/init: вызвать `GET /mcd/find-for-signing?docType=etrn&senderInn=:inn` из Task 08.
-Если mcd = null и reason != 'ok' → показать предупреждение.
-
-## Проверка
-1. /documents/:id → кнопка Подписать → flow до "Подписан"
-2. /documents/bulk-sign → выбрать несколько → подписать массово
+## Важно
+- Не менять существующие стили и layout
+- Не добавлять новые зависимости
+- `npm run build` должен проходить без ошибок
