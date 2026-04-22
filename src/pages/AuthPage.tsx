@@ -159,6 +159,7 @@ export default function AuthPage() {
       const response = await api.post<SendOtpResponse>('/auth/otp/send', {
         phone: getFormattedPhone(),
         deviceId: getOrCreateDeviceId(),
+        isTest: true,
       })
 
       setRequestId(response.verificationId)
@@ -193,6 +194,7 @@ export default function AuthPage() {
       const response = await api.post<SendOtpResponse>('/auth/otp/send', {
         phone: getFormattedPhone(),
         deviceId: getOrCreateDeviceId(),
+        isTest: true,
       })
 
       setRequestId(response.verificationId)
@@ -205,8 +207,8 @@ export default function AuthPage() {
   }
 
   const handleVerify = async () => {
-    if (code.length < 4) {
-      setCodeError('Введите 4-значный код')
+    if (code.length < 6) {
+      setCodeError('Введите 6-значный код')
       return
     }
     if (locked) return
@@ -400,7 +402,7 @@ export default function AuthPage() {
             {/* Demo hint */}
             <div className="mt-8 flex items-center gap-2 px-3 py-2.5 bg-brand-50 rounded-xl">
               <ShieldCheck className="h-4 w-4 text-brand-600 shrink-0" />
-              <p className="text-xs text-brand-700">Демо: введите код <span className="font-bold">1234</span></p>
+              <p className="text-xs text-brand-700">Демо: введите код <span className="font-bold">111111</span></p>
             </div>
           </>
         )}
