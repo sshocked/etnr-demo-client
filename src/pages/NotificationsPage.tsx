@@ -1,10 +1,9 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { FileText, CheckCircle, AlertTriangle, CreditCard, Info, BellOff, UserCheck } from 'lucide-react'
-import type { AppNotification, NotificationType } from '../lib/constants'
-import { STORAGE_KEYS } from '../lib/constants'
-import { getItem, setItem } from '../lib/storage'
+import type { NotificationType } from '../lib/constants'
 import { cn } from '../lib/utils'
+import { api } from '../lib/api'
 import Button from '../components/ui/Button'
 import EmptyState from '../components/ui/EmptyState'
 
@@ -51,36 +50,61 @@ function formatRelativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
+interface ApiNotification {
+  id: string
+  kind: string
+  title: string
+  body: string
+  entityId?: string
+  isRead: boolean
+  createdAt: string
+}
+
+function kindToType(kind: string): NotificationType {
+  const map: Record<string, NotificationType> = {
+    document_received: 'new_doc',
+    document_signed: 'signed',
+    document_refused: 'signed',
+    mcd_expiring: 'mcd_expiry',
+    mcd_revoked: 'mcd_expiry',
+    system: 'system',
+  }
+  return map[kind] ?? 'system'
+}
+
 export default function NotificationsPage() {
   const navigate = useNavigate()
-  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
-    return getItem<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS) ?? []
-  })
+  const [notifications, setNotifications] = useState<ApiNotification[]>([])
+  const [loading, setLoading] = useState(true)
 
-  const unreadCount = notifications.filter((n) => !n.read).length
+  useEffect(() => {
+    api.get<{ notifications: ApiNotification[] }>('/notifications')
+      .then(data => setNotifications(data.notifications ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
 
-  const markAllRead = useCallback(() => {
-    const updated = notifications.map((n) => ({ ...n, read: true }))
-    setNotifications(updated)
-    setItem(STORAGE_KEYS.NOTIFICATIONS, updated)
-  }, [notifications])
+  const unreadCount = notifications.filter((n) => !n.isRead).length
+
+  const markAllRead = useCallback(async () => {
+    await api.post('/notifications/read-all').catch(() => {})
+    setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
+  }, [])
 
   const handleClick = useCallback(
-    (notif: AppNotification) => {
-      // Mark as read
-      const updated = notifications.map((n) => (n.id === notif.id ? { ...n, read: true } : n))
-      setNotifications(updated)
-      setItem(STORAGE_KEYS.NOTIFICATIONS, updated)
-
-      // Navigate
-      if (notif.documentId) {
-        navigate(`/documents/${notif.documentId}`)
-      } else if (notif.action) {
-        navigate(notif.action)
+    async (notif: ApiNotification) => {
+      if (!notif.isRead) {
+        await api.post(`/notifications/${notif.id}/read`).catch(() => {})
+        setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, isRead: true } : n))
+      }
+      if (notif.entityId && (notif.kind === 'document_received' || notif.kind === 'document_signed' || notif.kind === 'document_refused')) {
+        navigate(`/documents/${notif.entityId}`)
       }
     },
-    [notifications, navigate],
+    [navigate],
   )
+
+  if (loading) return <div className="px-4 pt-6"><p className="text-gray-400 text-sm text-center">Загрузка...</p></div>
 
   if (notifications.length === 0) {
     return (
@@ -105,9 +129,10 @@ export default function NotificationsPage() {
 
       <div className="space-y-2">
         {notifications.map((notif) => {
-          const Icon = ICON_MAP[notif.type]
-          const colors = ICON_COLORS[notif.type]
-          const borderColor = BORDER_COLORS[notif.type]
+          const t = kindToType(notif.kind)
+          const Icon = ICON_MAP[t]
+          const colors = ICON_COLORS[t]
+          const borderColor = BORDER_COLORS[t]
 
           return (
             <div
@@ -118,7 +143,7 @@ export default function NotificationsPage() {
                 'hover:shadow-md active:scale-[0.99] transition-all duration-150',
                 'border-l-4',
                 borderColor,
-                !notif.read && 'bg-brand-50/40',
+                !notif.isRead && 'bg-brand-50/40',
               )}
             >
               <div className="flex gap-3">
@@ -132,15 +157,15 @@ export default function NotificationsPage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
-                    <p className={cn('text-base font-medium text-gray-900 dark:text-gray-100', !notif.read && 'font-semibold')}>
+                    <p className={cn('text-base font-medium text-gray-900 dark:text-gray-100', !notif.isRead && 'font-semibold')}>
                       {notif.title}
                     </p>
-                    {!notif.read && (
+                    {!notif.isRead && (
                       <span className="w-2.5 h-2.5 rounded-full bg-brand-500 flex-shrink-0 mt-1.5" />
                     )}
                   </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">{notif.message}</p>
-                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">{formatRelativeTime(notif.timestamp)}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">{notif.body}</p>
+                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">{formatRelativeTime(notif.createdAt)}</p>
                 </div>
               </div>
             </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Building2, Shield, RefreshCw, CreditCard, FileText, KeyRound, Link2, Copy, Check, ExternalLink, HelpCircle, ChevronRight, Loader2 } from 'lucide-react'
 import Card from '../components/ui/Card'
@@ -74,6 +74,7 @@ export default function ProfilePage() {
   const subscription = getItem<Subscription>(STORAGE_KEYS.SUBSCRIPTION)
   const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
   const [user, setUser] = useState<StoredUserProfile | null>(storedUser)
+  const storedUserRef = useRef(storedUser)
   const cert = getItem<Certificate>(STORAGE_KEYS.CERTIFICATE) ?? user?.certificate
   const [mcdLoading, setMcdLoading] = useState<number | null>(null)
   const [mcdLinkCopied, setMcdLinkCopied] = useState(false)
@@ -98,14 +99,14 @@ export default function ProfilePage() {
         const remoteUser = await api.get<AuthMeResponse>('/auth/me')
         if (cancelled) return
 
-        const nextUser = mergeRemoteUser(remoteUser, storedUser)
+        const nextUser = mergeRemoteUser(remoteUser, storedUserRef.current)
         setUser(nextUser)
         setItem(STORAGE_KEYS.USER, nextUser)
         setForm({
           name: remoteUser.name ?? '',
           company: remoteUser.company ?? '',
           inn: remoteUser.inn ?? '',
-          role: remoteUser.role ?? storedUser?.role ?? '',
+          role: remoteUser.role ?? storedUserRef.current?.role ?? '',
         })
       } catch (error) {
         if (cancelled) return
