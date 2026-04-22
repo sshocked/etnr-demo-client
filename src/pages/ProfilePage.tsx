@@ -1,14 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Building2, Shield, RefreshCw, CreditCard, FileText, KeyRound, Link2, Copy, Check, ExternalLink, HelpCircle, ChevronRight } from 'lucide-react'
+import { Building2, Shield, RefreshCw, CreditCard, FileText, KeyRound, Link2, Copy, Check, ExternalLink, HelpCircle, ChevronRight, Loader2 } from 'lucide-react'
 import Card from '../components/ui/Card'
 import Badge from '../components/ui/Badge'
 import Button from '../components/ui/Button'
+import Input from '../components/ui/Input'
 import { useToast } from '../components/ui/Toast'
 import { getItem, setItem } from '../lib/storage'
 import { STORAGE_KEYS, SUB_STATUS_LABELS, MCD_STATUS_LABELS, EDO_OPERATORS } from '../lib/constants'
 import type { UserProfile, Subscription, Mcd, Certificate } from '../lib/constants'
 import { formatDate, cn } from '../lib/utils'
+import { api, type ApiError } from '../lib/api'
 
 const subBadgeVariant: Record<string, 'success' | 'error' | 'warning'> = {
   active: 'success', expired: 'error', unpaid: 'warning',
@@ -22,15 +24,108 @@ const certBadgeVariant: Record<string, 'success' | 'error' | 'warning'> = {
   active: 'success', expired: 'error', revoked: 'error',
 }
 
+interface AuthMeResponse {
+  id: string
+  phone: string
+  name: string
+  company: string
+  inn: string
+  role?: string
+  onboardingCompleted: boolean
+  createdAt: string
+}
+
+type StoredUserProfile = UserProfile & { role?: string }
+
+function inferKind(inn: string, company: string, fallback?: UserProfile['kind']): UserProfile['kind'] {
+  if (fallback) return fallback
+  if (inn.length === 10) return 'ul'
+  if (/^ип\b/i.test(company.trim())) return 'ip'
+  return 'fl'
+}
+
+function mergeRemoteUser(remote: AuthMeResponse, current: StoredUserProfile | null): StoredUserProfile {
+  return {
+    ...(current ?? {
+      id: remote.id,
+      phone: remote.phone,
+      email: '',
+      kind: inferKind(remote.inn, remote.company),
+      onboardingCompleted: remote.onboardingCompleted,
+      name: remote.name,
+      inn: remote.inn,
+      company: remote.company,
+    }),
+    id: remote.id,
+    phone: remote.phone,
+    name: remote.name,
+    company: remote.company,
+    inn: remote.inn,
+    kind: inferKind(remote.inn, remote.company, current?.kind),
+    onboardingCompleted: remote.onboardingCompleted,
+    role: remote.role ?? current?.role,
+  }
+}
+
 export default function ProfilePage() {
   const navigate = useNavigate()
   const { toast } = useToast()
-  const user = getItem<UserProfile>(STORAGE_KEYS.USER)
+  const [storedUser] = useState<StoredUserProfile | null>(() => getItem<StoredUserProfile>(STORAGE_KEYS.USER))
   const subscription = getItem<Subscription>(STORAGE_KEYS.SUBSCRIPTION)
   const mcds = getItem<Mcd[]>(STORAGE_KEYS.MCD) ?? []
+  const [user, setUser] = useState<StoredUserProfile | null>(storedUser)
   const cert = getItem<Certificate>(STORAGE_KEYS.CERTIFICATE) ?? user?.certificate
   const [mcdLoading, setMcdLoading] = useState<number | null>(null)
   const [mcdLinkCopied, setMcdLinkCopied] = useState(false)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [form, setForm] = useState({
+    name: storedUser?.name ?? '',
+    company: storedUser?.company ?? '',
+    inn: storedUser?.inn ?? '',
+    role: storedUser?.role ?? '',
+  })
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadProfile = async () => {
+      setProfileLoading(true)
+      setProfileError('')
+
+      try {
+        const remoteUser = await api.get<AuthMeResponse>('/auth/me')
+        if (cancelled) return
+
+        const nextUser = mergeRemoteUser(remoteUser, storedUser)
+        setUser(nextUser)
+        setItem(STORAGE_KEYS.USER, nextUser)
+        setForm({
+          name: remoteUser.name ?? '',
+          company: remoteUser.company ?? '',
+          inn: remoteUser.inn ?? '',
+          role: remoteUser.role ?? storedUser?.role ?? '',
+        })
+      } catch (error) {
+        if (cancelled) return
+
+        const apiError = error as ApiError
+        setProfileError(apiError?.message || 'Не удалось загрузить профиль')
+        toast('Не удалось загрузить профиль из auth-service', 'error')
+      } finally {
+        if (!cancelled) {
+          setProfileLoading(false)
+        }
+      }
+    }
+
+    void loadProfile()
+
+    return () => {
+      cancelled = true
+    }
+  }, [toast])
 
   const mcdShareLink = (() => {
     const base = window.location.origin + window.location.pathname
@@ -76,6 +171,66 @@ export default function ProfilePage() {
     navigate('/cert-issue?reissue=true')
   }
 
+  const handleProfileSave = async () => {
+    if (!form.name.trim() || !form.company.trim() || !form.inn.trim()) {
+      setProfileError('Заполните ФИО, компанию и ИНН')
+      return
+    }
+
+    setProfileSaving(true)
+    setProfileError('')
+
+    try {
+      await api.put('/auth/profile', {
+        name: form.name.trim(),
+        company: form.company.trim(),
+        inn: form.inn.trim(),
+        role: form.role || undefined,
+      })
+
+      let nextUser: StoredUserProfile
+
+      try {
+        const remoteUser = await api.get<AuthMeResponse>('/auth/me')
+        nextUser = mergeRemoteUser(remoteUser, user)
+      } catch {
+        nextUser = {
+          ...(user ?? {
+            id: '',
+            phone: '',
+            email: '',
+            kind: inferKind(form.inn.trim(), form.company.trim()),
+            onboardingCompleted: true,
+            name: form.name.trim(),
+            inn: form.inn.trim(),
+            company: form.company.trim(),
+          }),
+          name: form.name.trim(),
+          company: form.company.trim(),
+          inn: form.inn.trim(),
+          kind: inferKind(form.inn.trim(), form.company.trim(), user?.kind),
+          role: form.role || user?.role,
+        }
+      }
+
+      setUser(nextUser)
+      setItem(STORAGE_KEYS.USER, nextUser)
+      setForm({
+        name: nextUser.name,
+        company: nextUser.company,
+        inn: nextUser.inn,
+        role: nextUser.role ?? '',
+      })
+      toast('Профиль сохранён', 'success')
+    } catch (error) {
+      const apiError = error as ApiError
+      setProfileError(apiError?.message || 'Не удалось сохранить профиль')
+      toast('Не удалось сохранить профиль', 'error')
+    } finally {
+      setProfileSaving(false)
+    }
+  }
+
   const usagePercent = subscription?.limit ? Math.round((subscription.used / subscription.limit) * 100) : 0
 
   return (
@@ -112,6 +267,50 @@ export default function ProfilePage() {
           ) : null}
         </div>
       </div>
+
+      <Card>
+        <div className="flex items-center justify-between mb-3">
+          <span className="font-semibold text-gray-900 dark:text-gray-100">Данные профиля</span>
+          {profileLoading && (
+            <span className="inline-flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Загрузка
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <Input
+            label="ФИО"
+            value={form.name}
+            onChange={e => setForm(current => ({ ...current, name: e.target.value }))}
+            disabled={profileLoading || profileSaving}
+          />
+          <Input
+            label="Компания / ИП"
+            value={form.company}
+            onChange={e => setForm(current => ({ ...current, company: e.target.value }))}
+            disabled={profileLoading || profileSaving}
+          />
+          <Input
+            label="ИНН"
+            inputMode="numeric"
+            value={form.inn}
+            onChange={e => setForm(current => ({ ...current, inn: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
+            disabled={profileLoading || profileSaving}
+          />
+        </div>
+
+        {profileError && (
+          <p className="mt-3 text-sm text-red-600 dark:text-red-400">{profileError}</p>
+        )}
+
+        <div className="mt-4">
+          <Button fullWidth onClick={handleProfileSave} loading={profileSaving} disabled={profileLoading}>
+            Сохранить профиль
+          </Button>
+        </div>
+      </Card>
 
       {/* Certificate */}
       <Card>

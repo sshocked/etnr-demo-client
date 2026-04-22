@@ -1,128 +1,179 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Building2, User, Briefcase, Loader2, AlertCircle, Search } from 'lucide-react'
+import { AlertCircle, Briefcase, Building2, Loader2, Search, User } from 'lucide-react'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Card from '../components/ui/Card'
+import { STORAGE_KEYS, type UserKind, type UserProfile } from '../lib/constants'
 import { getItem, setItem } from '../lib/storage'
-import { STORAGE_KEYS } from '../lib/constants'
-import type { UserProfile } from '../lib/constants'
+import { api, type ApiError } from '../lib/api'
+import { validateInn } from '../lib/mockDadata'
 import { cn } from '../lib/utils'
-import { lookupByInn, validateInn } from '../lib/mockDadata'
-import type { DadataResult } from '../lib/mockDadata'
 
-// Один короткий экран: ИНН → ДаДата → email → Dashboard
+interface PartyResponse {
+  kind: UserKind
+  inn: string
+  ogrn?: string
+  kpp?: string
+  name: string
+  shortName?: string
+  address?: string
+}
+
+type StoredUserProfile = UserProfile & { role?: string }
 
 export default function OnboardingPage() {
   const navigate = useNavigate()
-  const existingUser = getItem<UserProfile>(STORAGE_KEYS.USER)
+  const existingUser = getItem<StoredUserProfile>(STORAGE_KEYS.USER)
 
   const [inn, setInn] = useState(existingUser?.inn ?? '')
-  const [email, setEmail] = useState(existingUser?.email ?? '')
-  const [dadata, setDadata] = useState<DadataResult | null>(null)
+  const [dadata, setDadata] = useState<PartyResponse | null>(null)
+  const [manualName, setManualName] = useState(existingUser?.name ?? '')
+  const [manualCompany, setManualCompany] = useState(existingUser?.company ?? '')
   const [looking, setLooking] = useState(false)
   const [lookupError, setLookupError] = useState('')
-  const [emailError, setEmailError] = useState('')
+  const [manualMode, setManualMode] = useState(false)
+  const [submitError, setSubmitError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestInnRef = useRef(inn)
 
-  const handleInnChange = (v: string) => {
-    const clean = v.replace(/\D/g, '').slice(0, 12)
+  const lookupParty = async (requestedInn: string) => {
+    latestInnRef.current = requestedInn
+    setLooking(true)
+    setLookupError('')
+    setSubmitError('')
+
+    try {
+      const party = await api.get<PartyResponse>('/dadata/party', { inn: requestedInn })
+
+      if (latestInnRef.current !== requestedInn) return
+
+      setDadata(party)
+      setManualMode(false)
+      setManualName(party.kind === 'ul' ? existingUser?.name ?? '' : party.shortName ?? party.name)
+      setManualCompany(party.shortName ?? party.name)
+    } catch (error) {
+      if (latestInnRef.current !== requestedInn) return
+
+      const apiError = error as ApiError
+
+      // TODO: when /dadata/party is consistently available in every environment,
+      // revisit this manual fallback flow and narrow it to real outage cases only.
+      if (apiError?.status === 404 || apiError?.status >= 500) {
+        setLookupError('Сервис временно недоступен')
+        setManualMode(true)
+        setDadata(null)
+        return
+      }
+
+      setLookupError(apiError?.message || 'Не удалось проверить ИНН')
+      setDadata(null)
+    } finally {
+      if (latestInnRef.current === requestedInn) {
+        setLooking(false)
+      }
+    }
+  }
+
+  const handleInnChange = (value: string) => {
+    const clean = value.replace(/\D/g, '').slice(0, 12)
+
     setInn(clean)
     setDadata(null)
     setLookupError('')
+    setSubmitError('')
+    setManualMode(false)
 
     if (debounceRef.current) clearTimeout(debounceRef.current)
 
     if (clean.length === 10 || clean.length === 12) {
-      setLooking(true)
-      debounceRef.current = setTimeout(async () => {
-        const result = await lookupByInn(clean)
-        setLooking(false)
-        if (!result) {
-          setLookupError('По этому ИНН ничего не найдено в ЕГРЮЛ/ЕГРИП')
-        } else if (result.status && result.status !== 'active') {
-          setLookupError('Запись не активна в ЕГРЮЛ')
-          setDadata(result)
-        } else {
-          setDadata(result)
-        }
+      debounceRef.current = setTimeout(() => {
+        void lookupParty(clean)
       }, 500)
     }
   }
 
-  // Cleanup
   useEffect(() => () => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
   }, [])
 
-  // Автолукап на маунте, если ИНН уже подставлен
   useEffect(() => {
-    if ((inn.length === 10 || inn.length === 12) && !dadata && !looking) {
-      setLooking(true)
-      lookupByInn(inn).then(result => {
-        setLooking(false)
-        if (!result) setLookupError('По этому ИНН ничего не найдено в ЕГРЮЛ/ЕГРИП')
-        else setDadata(result)
-      })
+    if ((inn.length === 10 || inn.length === 12) && !dadata && !looking && !manualMode) {
+      void lookupParty(inn)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const validateEmail = (e: string): string | null => {
-    if (!e.trim()) return 'Email обязателен'
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return 'Некорректный email'
-    return null
-  }
+  const handleSubmit = async () => {
+    const innError = validateInn(inn)
+    if (innError) {
+      setLookupError(innError)
+      return
+    }
 
-  const handleSubmit = () => {
-    const innErr = validateInn(inn)
-    if (innErr) { setLookupError(innErr); return }
-    if (!dadata) { setLookupError('Дождитесь проверки ИНН'); return }
-    const emErr = validateEmail(email)
-    if (emErr) { setEmailError(emErr); return }
+    if (!dadata && !manualMode) {
+      setLookupError('Дождитесь проверки ИНН')
+      return
+    }
+
+    const name = dadata
+      ? (dadata.kind === 'ul' ? manualName.trim() : dadata.shortName?.trim() || dadata.name.trim())
+      : manualName.trim()
+    const company = dadata ? (dadata.shortName?.trim() || dadata.name.trim()) : manualCompany.trim()
+
+    if (!name) {
+      setSubmitError('Укажите ФИО')
+      return
+    }
+
+    if (!company) {
+      setSubmitError('Укажите компанию или ИП')
+      return
+    }
 
     setSubmitting(true)
-    setTimeout(() => {
-      const base: UserProfile = existingUser ?? {
-        id: 'user-' + Math.random().toString(36).slice(2, 10),
-        phone: '',
-        name: '',
-        email: '',
-        inn: '',
-        kind: 'fl',
-        company: '',
-        onboardingCompleted: false,
-      }
-      // Извлекаем ЧИСТОЕ ФИО для name:
-      // - ЮЛ: управляющий (уже ФИО)
-      // - ИП: из "Индивидуальный предприниматель ФИО" убираем префикс
-      // - ФЛ: уже ФИО
-      const cleanName = (() => {
-        if (dadata.kind === 'ul') return dadata.management ?? ''
-        if (dadata.kind === 'ip') {
-          return dadata.name.replace(/^Индивидуальный предприниматель\s+/i, '').trim()
-        }
-        return dadata.name
-      })()
+    setSubmitError('')
 
-      const user: UserProfile = {
-        ...base,
-        inn: dadata.inn,
-        kind: dadata.kind,
-        name: cleanName,
-        // company — обязательно shortName (ООО «...»), никогда полное название
-        company: dadata.shortName || dadata.name.slice(0, 60),
-        ogrn: dadata.ogrn,
-        email,
+    try {
+      await api.put('/auth/profile', {
+        name,
+        company,
+        inn,
+        role: existingUser?.role,
+      })
+      await api.post('/auth/onboarding/complete')
+
+      const nextUser: StoredUserProfile = {
+        ...(existingUser ?? {
+          id: '',
+          phone: '',
+          email: '',
+          kind: inn.length === 10 ? 'ul' : 'fl',
+          onboardingCompleted: false,
+          name: '',
+          inn: '',
+          company: '',
+        }),
+        name,
+        company,
+        inn,
+        kind: dadata?.kind ?? (inn.length === 10 ? 'ul' : existingUser?.kind ?? 'fl'),
+        ogrn: dadata?.ogrn ?? existingUser?.ogrn,
         onboardingCompleted: true,
       }
-      setItem(STORAGE_KEYS.USER, user)
-      navigate('/dashboard')
-    }, 600)
+
+      setItem(STORAGE_KEYS.USER, nextUser)
+      navigate('/dashboard', { replace: true })
+    } catch (error) {
+      const apiError = error as ApiError
+      setSubmitError(apiError?.message || 'Не удалось завершить онбординг')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
-  const canSubmit = dadata && email.trim() && !looking && !submitting
+  const canSubmit = (Boolean(dadata) || manualMode) && !looking && !submitting
 
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900 flex flex-col">
@@ -138,7 +189,6 @@ export default function OnboardingPage() {
         </div>
 
         <div className="mt-6 space-y-4">
-          {/* ИНН */}
           <div>
             <Input
               label="ИНН"
@@ -151,17 +201,13 @@ export default function OnboardingPage() {
             {looking && (
               <div className="flex items-center gap-2 mt-2 text-xs text-gray-500 dark:text-gray-400">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                <span>Ищем в ЕГРЮЛ / ЕГРИП...</span>
+                <span>Проверяем ИНН в DaData...</span>
               </div>
             )}
           </div>
 
-          {/* Результат ДаДаты */}
           {dadata && !looking && (
-            <Card className={cn(
-              '!p-4',
-              dadata.status === 'active' ? '!border-green-200 dark:!border-green-800' : '!border-red-200 dark:!border-red-800',
-            )}>
+            <Card className="!p-4 !border-green-200 dark:!border-green-800">
               <div className="flex items-start gap-3">
                 <div className={cn(
                   'w-10 h-10 rounded-xl flex items-center justify-center shrink-0',
@@ -178,12 +224,10 @@ export default function OnboardingPage() {
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
-                      {dadata.kind === 'ul' ? 'Юридическое лицо' : dadata.kind === 'ip' ? 'Индивидуальный предприниматель' : 'Физическое лицо'}
-                    </span>
-                  </div>
-                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-snug mb-2">
+                  <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">
+                    {dadata.kind === 'ul' ? 'Юридическое лицо' : dadata.kind === 'ip' ? 'Индивидуальный предприниматель' : 'Физическое лицо'}
+                  </span>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-snug mt-1 mb-2">
                     {dadata.name}
                   </p>
                   <div className="space-y-1 text-xs">
@@ -197,10 +241,10 @@ export default function OnboardingPage() {
                         <span className="font-mono text-gray-700 dark:text-gray-300">{dadata.ogrn}</span>
                       </div>
                     )}
-                    {dadata.management && (
+                    {dadata.kpp && (
                       <div className="flex gap-2">
-                        <span className="text-gray-400 dark:text-gray-500 shrink-0">Руководитель</span>
-                        <span className="text-gray-700 dark:text-gray-300">{dadata.management}</span>
+                        <span className="text-gray-400 dark:text-gray-500 shrink-0">КПП</span>
+                        <span className="font-mono text-gray-700 dark:text-gray-300">{dadata.kpp}</span>
                       </div>
                     )}
                     {dadata.address && (
@@ -215,6 +259,38 @@ export default function OnboardingPage() {
             </Card>
           )}
 
+          {manualMode && !looking && (
+            <Card className="!p-4 !border-amber-200 dark:!border-amber-800">
+              <div className="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-200 mb-4">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <p>Сервис временно недоступен. Заполните данные вручную.</p>
+              </div>
+              <div className="space-y-3">
+                <Input
+                  label="ФИО"
+                  value={manualName}
+                  onChange={e => setManualName(e.target.value)}
+                  placeholder="Иванов Иван Иванович"
+                />
+                <Input
+                  label="Компания / ИП"
+                  value={manualCompany}
+                  onChange={e => setManualCompany(e.target.value)}
+                  placeholder="ООО «Компания» / ИП Иванов И.И."
+                />
+              </div>
+            </Card>
+          )}
+
+          {dadata && dadata.kind === 'ul' && (
+            <Input
+              label="ФИО подписанта"
+              value={manualName}
+              onChange={e => setManualName(e.target.value)}
+              placeholder="Иванов Иван Иванович"
+            />
+          )}
+
           {dadata === null && !looking && inn.length > 0 && inn.length < 10 && (
             <div className="flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
               <Search className="h-3 w-3" />
@@ -222,38 +298,27 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {/* Email */}
-          {dadata && (
-            <div>
-              <Input
-                label="Email"
-                type="email"
-                value={email}
-                onChange={e => { setEmail(e.target.value); setEmailError('') }}
-                placeholder="ivan@example.ru"
-                error={emailError}
-              />
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
-                Для уведомлений и восстановления доступа. Может отличаться от корпоративной почты.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Сабмит */}
-        <div className="mt-8">
-          <Button fullWidth size="lg" loading={submitting} disabled={!canSubmit} onClick={handleSubmit}>
-            Продолжить
-          </Button>
-
-          {dadata && (
-            <div className="flex items-start gap-2 mt-4 p-3 rounded-xl bg-brand-50 dark:bg-brand-900/20 text-xs text-brand-800 dark:text-brand-200">
+          {submitError && (
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 dark:bg-red-950/40 text-sm text-red-700 dark:text-red-300">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-              <p className="leading-relaxed">
-                Для подписания документов в дальнейшем потребуется УКЭП и МЧД — это можно настроить после входа в приложение.
-              </p>
+              <p>{submitError}</p>
             </div>
           )}
+
+          <div className="mt-8">
+            <Button fullWidth size="lg" loading={submitting} disabled={!canSubmit} onClick={handleSubmit}>
+              Продолжить
+            </Button>
+
+            {(dadata || manualMode) && (
+              <div className="flex items-start gap-2 mt-4 p-3 rounded-xl bg-brand-50 dark:bg-brand-900/20 text-xs text-brand-800 dark:text-brand-200">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <p className="leading-relaxed">
+                  Для подписания документов в дальнейшем потребуется УКЭП и МЧД — это можно настроить после входа в приложение.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
