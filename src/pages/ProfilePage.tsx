@@ -28,8 +28,8 @@ const subBadgeVariant: Record<string, 'success' | 'error' | 'warning'> = {
   active: 'success', expired: 'error', unpaid: 'warning',
 }
 
-const mcdBadgeVariant: Record<string, 'success' | 'default' | 'error' | 'warning'> = {
-  linked: 'success', none: 'default', expired: 'error', invalid: 'error', insufficient: 'warning',
+const mcdBadgeVariant: Record<string, 'success' | 'default' | 'error' | 'warning' | undefined> = {
+  linked: 'success', active: 'success', none: 'default', expired: 'error', invalid: 'error', insufficient: 'warning',
 }
 
 const certBadgeVariant: Record<string, 'success' | 'error' | 'warning'> = {
