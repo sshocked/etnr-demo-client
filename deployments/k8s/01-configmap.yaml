@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etnr-client-config
+  namespace: etnr-client-service
+data:
+  # Nginx не использует env, конфиг статический
+  APP_ENV: production

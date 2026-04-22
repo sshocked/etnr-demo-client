@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: etnr-demo-client
+  namespace: etnr-client-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+  selector:
+    app: etnr-demo-client
