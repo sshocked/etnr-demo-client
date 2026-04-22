@@ -4,6 +4,7 @@ import { Fingerprint, ChevronLeft } from 'lucide-react'
 import { getItem, setAuth } from '../lib/storage'
 import { STORAGE_KEYS } from '../lib/constants'
 import type { UserProfile } from '../lib/constants'
+import { api } from '../lib/api'
 import { cn } from '../lib/utils'
 import { useToast } from '../components/ui/Toast'
 
@@ -18,6 +19,7 @@ export default function PinLoginPage() {
   const [error, setError] = useState('')
   const [attempts, setAttempts] = useState(0)
   const [biometricPrompt, setBiometricPrompt] = useState(biometricsEnabled)
+  const [validatingSession, setValidatingSession] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const pinLength = savedPin?.length ?? 4
@@ -39,9 +41,20 @@ export default function PinLoginPage() {
     }
   }, [])
 
-  const handleSuccess = () => {
-    setAuth({ isAuthenticated: true, phone: user?.phone ?? '' })
-    navigate('/dashboard', { replace: true })
+  const handleSuccess = async () => {
+    setValidatingSession(true)
+
+    try {
+      await api.get('/auth/me')
+      setAuth({ isAuthenticated: true, phone: user?.phone ?? '' })
+      navigate('/dashboard', { replace: true })
+    } catch {
+      setError('Сессия истекла. Войдите по номеру телефона.')
+      toast('Сессия истекла. Повторите вход по SMS', 'error')
+      navigate('/auth', { replace: true })
+    } finally {
+      setValidatingSession(false)
+    }
   }
 
   const handleDigit = (digit: string) => {
@@ -53,7 +66,7 @@ export default function PinLoginPage() {
     if (next.length === pinLength) {
       setTimeout(() => {
         if (next === savedPin) {
-          handleSuccess()
+          void handleSuccess()
         } else {
           const newAttempts = attempts + 1
           setAttempts(newAttempts)
@@ -77,7 +90,9 @@ export default function PinLoginPage() {
     // Simulate biometric authentication
     setBiometricPrompt(false)
     toast('Биометрия подтверждена', 'success')
-    setTimeout(() => handleSuccess(), 300)
+    setTimeout(() => {
+      void handleSuccess()
+    }, 300)
   }
 
   const handleSwitchToPhone = () => {
@@ -136,7 +151,7 @@ export default function PinLoginPage() {
                 onDelete={handleDelete}
                 showBiometric={biometricsEnabled && !biometricPrompt}
                 onBiometric={handleBiometricAuth}
-                disabled={attempts >= 5}
+                disabled={attempts >= 5 || validatingSession}
               />
             </div>
 
@@ -154,6 +169,7 @@ export default function PinLoginPage() {
                 Войти по номеру телефона
               </button>
             </div>
+            {validatingSession && <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">Проверяем сессию...</p>}
           </>
         )}
       </div>

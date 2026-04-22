@@ -3,17 +3,42 @@ import { useNavigate } from 'react-router-dom'
 import { ChevronLeft, AlertTriangle, ShieldCheck } from 'lucide-react'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
-import { setAuth, setItem, getItem } from '../lib/storage'
-import { STORAGE_KEYS } from '../lib/constants'
+import { setItem, getItem } from '../lib/storage'
+import { STORAGE_KEYS, type UserProfile } from '../lib/constants'
+import { api, type ApiError } from '../lib/api'
 import { seedDocuments, seedTrips } from '../data/mockDocuments'
 import { defaultUser, defaultSubscription, defaultMcds } from '../data/mockUser'
 import { seedActivity } from '../data/mockHistory'
 import { seedNotifications } from '../data/mockNotifications'
 
-const DEMO_CODE = '1234'
 const MAX_CODE_ATTEMPTS = 5
 const MAX_RESEND_ATTEMPTS = 3
-const RESEND_COOLDOWNS = [60, 120, 300] // escalating: 1min, 2min, 5min
+
+interface SendOtpResponse {
+  verificationId: string
+  expiresIn: number
+  resendAfter: number
+}
+
+interface VerifyOtpResponse {
+  accessToken: string
+  expiresIn: number
+  refreshToken: string
+  refreshExpiresIn: number
+  user: {
+    id: string
+    phone: string
+  }
+}
+
+interface AuthStorage {
+  access_token?: string
+  refresh_token?: string
+  device_id?: string
+  user_id?: string
+  phone?: string
+  isAuthenticated?: boolean
+}
 
 export default function AuthPage() {
   const navigate = useNavigate()
@@ -28,6 +53,7 @@ export default function AuthPage() {
   const [resendCount, setResendCount] = useState(0)
   const [locked, setLocked] = useState(false)
   const [lockTimer, setLockTimer] = useState(0)
+  const [requestId, setRequestId] = useState('')
   const codeInputRef = useRef<HTMLInputElement>(null)
 
   // Countdown timer for resend
@@ -64,6 +90,31 @@ export default function AuthPage() {
     return phone.replace(/\D/g, '')
   }
 
+  const getFormattedPhone = (): string => {
+    const digits = getCleanDigits()
+    return digits ? `+${digits}` : ''
+  }
+
+  const getOrCreateDeviceId = (): string => {
+    const auth = getItem<AuthStorage>(STORAGE_KEYS.AUTH) ?? {}
+
+    if (auth.device_id) {
+      return auth.device_id
+    }
+
+    const deviceId = crypto.randomUUID()
+    setItem(STORAGE_KEYS.AUTH, { ...auth, device_id: deviceId })
+    return deviceId
+  }
+
+  const getApiErrorMessage = (error: unknown, fallback: string): string => {
+    if (typeof error === 'object' && error && 'message' in error && typeof error.message === 'string') {
+      return error.message
+    }
+
+    return fallback
+  }
+
   const validatePhone = (): boolean => {
     const digits = getCleanDigits()
     if (digits.length < 11) {
@@ -98,27 +149,35 @@ export default function AuthPage() {
     if (phoneError) setPhoneError('')
   }
 
-  const handleSendCode = () => {
+  const handleSendCode = async () => {
     if (!validatePhone()) return
     setLoading(true)
     setCodeError('')
     setCode('')
     setCodeAttempts(0)
-    setTimeout(() => {
+    setLocked(false)
+    setLockTimer(0)
+
+    try {
+      const response = await api.post<SendOtpResponse>('/auth/otp/send', {
+        phone: getFormattedPhone(),
+        deviceId: getOrCreateDeviceId(),
+      })
+
+      setRequestId(response.verificationId)
       setLoading(false)
       setPhase('code')
-      setTimer(RESEND_COOLDOWNS[Math.min(resendCount, RESEND_COOLDOWNS.length - 1)])
+      setTimer(response.resendAfter)
       setTimeout(() => codeInputRef.current?.focus(), 100)
-    }, 800)
+    } catch (error) {
+      setLoading(false)
+      setPhoneError(getApiErrorMessage(error, 'Не удалось отправить код'))
+    }
   }
 
-  const handleResend = () => {
+  const handleResend = async () => {
     if (timer > 0 || resendCount >= MAX_RESEND_ATTEMPTS) return
     const nextResend = resendCount + 1
-    setResendCount(nextResend)
-    setCode('')
-    setCodeError('')
-    setCodeAttempts(0)
 
     if (nextResend >= MAX_RESEND_ATTEMPTS) {
       // Lock after max resends
@@ -127,38 +186,48 @@ export default function AuthPage() {
       return
     }
 
-    setTimer(RESEND_COOLDOWNS[Math.min(nextResend, RESEND_COOLDOWNS.length - 1)])
+    setLoading(true)
+    setResendCount(nextResend)
+    setCode('')
+    setCodeError('')
+    setCodeAttempts(0)
+
+    try {
+      const response = await api.post<SendOtpResponse>('/auth/otp/send', {
+        phone: getFormattedPhone(),
+        deviceId: getOrCreateDeviceId(),
+      })
+
+      setRequestId(response.verificationId)
+      setTimer(response.resendAfter)
+    } catch (error) {
+      setCodeError(getApiErrorMessage(error, 'Не удалось отправить код повторно'))
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const handleVerify = () => {
+  const handleVerify = async () => {
     if (code.length < 4) {
       setCodeError('Введите 4-значный код')
       return
     }
     if (locked) return
-
-    // Validate code (demo: accept "1234" or any 4+ digit code)
-    if (code !== DEMO_CODE && code.length >= 4) {
-      const attempts = codeAttempts + 1
-      setCodeAttempts(attempts)
-
-      if (attempts >= MAX_CODE_ATTEMPTS) {
-        setLocked(true)
-        setLockTimer(300) // 5 min lockout
-        setCodeError(`Слишком много попыток. Повторите через 5 минут.`)
-        return
-      }
-
-      const remaining = MAX_CODE_ATTEMPTS - attempts
-      setCodeError(`Неверный код. ${remaining === 1 ? 'Осталась 1 попытка' : `Осталось ${remaining} попыток`}`)
-      setCode('')
+    if (!requestId) {
+      setCodeError('Сначала запросите SMS-код')
       return
     }
 
     setLoading(true)
-    setTimeout(() => {
-      const digits = getCleanDigits()
-      setAuth({ isAuthenticated: true, phone: digits })
+
+    try {
+      const deviceId = getOrCreateDeviceId()
+      const response = await api.post<VerifyOtpResponse>('/auth/otp/verify', {
+        verificationId: requestId,
+        code,
+        deviceId,
+      })
+
       if (!getItem(STORAGE_KEYS.DOCUMENTS)) {
         setItem(STORAGE_KEYS.DOCUMENTS, seedDocuments())
         setItem(STORAGE_KEYS.ACTIVITY, seedActivity())
@@ -167,20 +236,57 @@ export default function AuthPage() {
         setItem(STORAGE_KEYS.NOTIFICATIONS, seedNotifications())
         setItem(STORAGE_KEYS.TRIPS, seedTrips())
       }
-      const user = getItem<{ onboardingCompleted?: boolean }>(STORAGE_KEYS.USER)
-      if (!user) {
-        setItem(STORAGE_KEYS.USER, { ...defaultUser, phone: digits, onboardingCompleted: false })
+
+      const currentAuth = getItem<AuthStorage>(STORAGE_KEYS.AUTH) ?? {}
+      setItem(STORAGE_KEYS.AUTH, {
+        ...currentAuth,
+        access_token: response.accessToken,
+        refresh_token: response.refreshToken,
+        device_id: deviceId,
+        user_id: response.user.id,
+        phone: response.user.phone,
+        isAuthenticated: true,
+      })
+
+      const existingUser = getItem<UserProfile>(STORAGE_KEYS.USER)
+      const nextUser: UserProfile = {
+        ...defaultUser,
+        ...existingUser,
+        id: response.user.id,
+        phone: response.user.phone,
+        onboardingCompleted: existingUser?.onboardingCompleted ?? false,
       }
+      setItem(STORAGE_KEYS.USER, nextUser)
+
       const hasPin = getItem(STORAGE_KEYS.PIN)
       if (!hasPin) {
         navigate('/pin-setup')
-      } else if (user && !user.onboardingCompleted) {
+      } else if (!nextUser.onboardingCompleted) {
         navigate('/onboarding')
       } else {
         navigate('/dashboard')
       }
+    } catch (error) {
+      const attempts = codeAttempts + 1
+      setCodeAttempts(attempts)
+
+      const apiError = error as ApiError
+      if (apiError?.status === 400 || apiError?.status === 401) {
+        if (attempts >= MAX_CODE_ATTEMPTS) {
+          setLocked(true)
+          setLockTimer(300)
+          setCodeError('Слишком много попыток. Повторите через 5 минут.')
+        } else {
+          const remaining = MAX_CODE_ATTEMPTS - attempts
+          setCodeError(`Неверный код. ${remaining === 1 ? 'Осталась 1 попытка' : `Осталось ${remaining} попыток`}`)
+        }
+        setCode('')
+      } else {
+        setCodeError(getApiErrorMessage(error, 'Не удалось подтвердить код'))
+      }
+    } finally {
       setLoading(false)
-    }, 1000)
+    }
   }
 
   const handleChangePhone = () => {
@@ -188,6 +294,7 @@ export default function AuthPage() {
     setCode('')
     setCodeError('')
     setCodeAttempts(0)
+    setRequestId('')
   }
 
   const formatTime = (s: number): string => {

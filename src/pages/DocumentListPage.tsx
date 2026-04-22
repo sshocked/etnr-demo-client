@@ -1,17 +1,16 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Search, FileText, ChevronRight, SlidersHorizontal, X, CheckSquare, Square, Truck, Check, XCircle } from 'lucide-react'
+import { Search, FileText, ChevronRight, SlidersHorizontal, X, CheckSquare, Square } from 'lucide-react'
 import Card from '../components/ui/Card'
 import Badge from '../components/ui/Badge'
 import Button from '../components/ui/Button'
 import { SkeletonCard } from '../components/ui/Skeleton'
 import EmptyState from '../components/ui/EmptyState'
 import ErrorState from '../components/ui/ErrorState'
-import { getItem, simulateDelay, shouldSimulateError } from '../lib/storage'
-import { STORAGE_KEYS, DocumentStatus, STATUS_LABELS, STATUS_COLORS, DOC_TYPE_LABELS } from '../lib/constants'
-import type { DocRecord, Trip } from '../lib/constants'
+import { DocumentStatus, STATUS_LABELS, STATUS_COLORS, DOC_TYPE_LABELS, type DocRecord } from '../lib/constants'
 import { formatDate, cn } from '../lib/utils'
-import { useToast } from '../components/ui/Toast'
+import { api } from '../lib/api'
+import { type DocumentsListResponse, normalizeListDocument } from '../lib/documents'
 
 const statusFilters: { label: string; value: string }[] = [
   { label: 'Все', value: 'ALL' },
@@ -20,7 +19,6 @@ const statusFilters: { label: string; value: string }[] = [
   { label: 'Отказ', value: DocumentStatus.REFUSED },
   { label: 'Ошибка', value: DocumentStatus.ERROR },
 ]
-
 
 const SELECTABLE_STATUSES = new Set([DocumentStatus.NEED_SIGN, DocumentStatus.ERROR])
 
@@ -44,30 +42,24 @@ export default function DocumentListPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState(false)
   const [docs, setDocs] = useState<DocRecord[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
 
-  // Filter state — initialized from URL params
   const [search, setSearch] = useState(searchParams.get('q') || '')
   const [statusFilter, setStatusFilter] = useState(searchParams.get('status') || 'ALL')
   const [dateFrom, setDateFrom] = useState(searchParams.get('dateFrom') || '')
   const [dateTo, setDateTo] = useState(searchParams.get('dateTo') || '')
   const [senderFilter, setSenderFilter] = useState(searchParams.get('sender') || '')
   const [filtersOpen, setFiltersOpen] = useState(false)
-
-  // Selection mode state
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
-  // Trip grouping
-  const [groupByTrip, setGroupByTrip] = useState(false)
-  const trips = useMemo(() => getItem<Trip[]>(STORAGE_KEYS.TRIPS) ?? [], [])
+  const deferredSearch = useDeferredValue(search.trim())
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
+  const requestIdRef = useRef(0)
 
-  // Swipe state
-  const { toast } = useToast()
-  const touchRef = useRef<{ startX: number; startY: number; id: string } | null>(null)
-
-  // Sync filter state to URL search params
   const syncParams = useCallback(
     (overrides: Record<string, string> = {}) => {
       const state: Record<string, string> = {
@@ -89,7 +81,6 @@ export default function DocumentListPage() {
     [statusFilter, search, dateFrom, dateTo, senderFilter, setSearchParams],
   )
 
-  // Count of active advanced filters (excluding status and search which are always visible)
   const activeFilterCount = useMemo(() => {
     let count = 0
     if (dateFrom) count++
@@ -98,7 +89,6 @@ export default function DocumentListPage() {
     return count
   }, [dateFrom, dateTo, senderFilter])
 
-  // List of active filter labels for removable chips
   const activeFilterChips = useMemo(() => {
     const chips: { key: string; label: string }[] = []
     if (dateFrom) chips.push({ key: 'dateFrom', label: `С ${dateFrom}` })
@@ -122,70 +112,106 @@ export default function DocumentListPage() {
     syncParams({ dateFrom: '', dateTo: '', sender: '' })
   }
 
-  // Extract unique sender names
   const uniqueSenders = useMemo(() => {
     const names = new Set<string>()
-    docs.forEach(d => names.add(d.sender.name))
+    docs.forEach(doc => names.add(doc.sender.name))
     return Array.from(names).sort()
   }, [docs])
 
-  const load = async () => {
-    setLoading(true)
-    setError(false)
-    await simulateDelay()
-    if (shouldSimulateError() && Math.random() < 0.3) {
-      setError(true)
-      setLoading(false)
-      return
+  const apiStatus = statusFilter === 'ALL' ? undefined : statusFilter
+
+  const fetchPage = useCallback(async (cursor?: string | null, reset = false) => {
+    const currentRequestId = requestIdRef.current
+
+    if (reset) {
+      setLoading(true)
+      setError(false)
+    } else {
+      setLoadingMore(true)
     }
-    const all = getItem<DocRecord[]>(STORAGE_KEYS.DOCUMENTS) ?? []
-    // Exclude SIGNED and SIGNED_WITH_RESERVATIONS — those are in archive
-    setDocs(all.filter(d => d.status !== DocumentStatus.SIGNED && d.status !== DocumentStatus.SIGNED_WITH_RESERVATIONS))
-    setLoading(false)
-  }
 
-  useEffect(() => { load() }, [])
+    try {
+      const response = await api.get<DocumentsListResponse>('/documents', {
+        status: apiStatus,
+        cursor: cursor ?? undefined,
+        search: deferredSearch || undefined,
+        limit: 20,
+      })
 
-  // Sync params whenever filters change
+      if (requestIdRef.current !== currentRequestId) return
+
+      const items = (response.items ?? []).map(normalizeListDocument)
+      setDocs(prev => {
+        if (reset) return items
+
+        const seen = new Set(prev.map(item => item.id))
+        return [...prev, ...items.filter(item => !seen.has(item.id))]
+      })
+      setNextCursor(response.nextCursor ?? null)
+    } catch {
+      if (requestIdRef.current !== currentRequestId) return
+      setError(true)
+    } finally {
+      if (requestIdRef.current !== currentRequestId) return
+      setLoading(false)
+      setLoadingMore(false)
+    }
+  }, [apiStatus, deferredSearch])
+
+  const reload = useCallback(() => {
+    requestIdRef.current += 1
+    setDocs([])
+    setNextCursor(null)
+    setSelectedIds(new Set())
+    fetchPage(undefined, true)
+  }, [fetchPage])
+
+  useEffect(() => {
+    reload()
+  }, [reload])
+
   useEffect(() => {
     syncParams()
-  }, [statusFilter, search, dateFrom, dateTo, senderFilter])
+  }, [statusFilter, search, dateFrom, dateTo, senderFilter, syncParams])
+
+  useEffect(() => {
+    if (!nextCursor || loading || loadingMore || error) return
+    const node = sentinelRef.current
+    if (!node) return
+
+    const observer = new IntersectionObserver(entries => {
+      if (!entries[0]?.isIntersecting) return
+      fetchPage(nextCursor, false)
+    }, { rootMargin: '240px 0px' })
+
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [nextCursor, loading, loadingMore, error, fetchPage])
 
   const filtered = useMemo(() => {
     let result = docs
 
-    // Status filter
-    if (statusFilter !== 'ALL') result = result.filter(d => d.status === statusFilter)
-
-    // Text search
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      result = result.filter(d => d.number.toLowerCase().includes(q) || d.title.toLowerCase().includes(q) || d.sender.name.toLowerCase().includes(q))
-    }
-
-    // Date range filter
     if (dateFrom) {
       const from = new Date(dateFrom)
       from.setHours(0, 0, 0, 0)
-      result = result.filter(d => new Date(d.updatedAt) >= from)
+      result = result.filter(doc => new Date(doc.updatedAt) >= from)
     }
+
     if (dateTo) {
       const to = new Date(dateTo)
       to.setHours(23, 59, 59, 999)
-      result = result.filter(d => new Date(d.updatedAt) <= to)
+      result = result.filter(doc => new Date(doc.updatedAt) <= to)
     }
 
-    // Sender filter
     if (senderFilter) {
-      result = result.filter(d => d.sender.name === senderFilter)
+      result = result.filter(doc => doc.sender.name === senderFilter)
     }
 
-    return result.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-  }, [docs, statusFilter, search, dateFrom, dateTo, senderFilter])
+    return result
+  }, [docs, dateFrom, dateTo, senderFilter])
 
-  // Selectable documents from the filtered list
   const selectableDocs = useMemo(
-    () => filtered.filter(d => SELECTABLE_STATUSES.has(d.status)),
+    () => filtered.filter(doc => SELECTABLE_STATUSES.has(doc.status)),
     [filtered],
   )
 
@@ -202,7 +228,7 @@ export default function DocumentListPage() {
     if (selectedIds.size === selectableDocs.length) {
       setSelectedIds(new Set())
     } else {
-      setSelectedIds(new Set(selectableDocs.map(d => d.id)))
+      setSelectedIds(new Set(selectableDocs.map(doc => doc.id)))
     }
   }
 
@@ -216,120 +242,60 @@ export default function DocumentListPage() {
     navigate(`/documents/bulk-sign?ids=${Array.from(selectedIds).join(',')}`)
   }
 
-  // Date preset helpers
   const applyDatePreset = (preset: 'today' | 'week' | 'month') => {
     const now = new Date()
     const todayStr = toDateInputValue(now)
-    let fromDate: Date
+    const fromDate = new Date(now)
 
-    if (preset === 'today') {
-      fromDate = now
-    } else if (preset === 'week') {
-      fromDate = new Date(now)
-      fromDate.setDate(now.getDate() - 7)
-    } else {
-      fromDate = new Date(now)
-      fromDate.setMonth(now.getMonth() - 1)
-    }
+    if (preset === 'week') fromDate.setDate(now.getDate() - 7)
+    if (preset === 'month') fromDate.setMonth(now.getMonth() - 1)
 
-    const fromStr = toDateInputValue(fromDate)
-    setDateFrom(fromStr)
+    setDateFrom(toDateInputValue(fromDate))
     setDateTo(todayStr)
-  }
-
-  // Swipe handlers
-  const onTouchStart = (id: string, e: React.TouchEvent) => {
-    if (selectionMode) return
-    touchRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, id }
-  }
-  const onTouchMove = (id: string, e: React.TouchEvent) => {
-    if (!touchRef.current || touchRef.current.id !== id || selectionMode) return
-    const dx = e.touches[0].clientX - touchRef.current.startX
-    const dy = e.touches[0].clientY - touchRef.current.startY
-    // Ignore vertical swipes
-    if (Math.abs(dy) > Math.abs(dx)) return
-    const el = (e.currentTarget as HTMLElement).querySelector('[data-swipe-card]') as HTMLElement
-    if (el) el.style.transform = `translateX(${Math.max(-100, Math.min(100, dx))}px)`
-  }
-  const onTouchEnd = (doc: DocRecord, e: React.TouchEvent) => {
-    if (!touchRef.current || touchRef.current.id !== doc.id || selectionMode) return
-    const dx = e.changedTouches[0].clientX - touchRef.current.startX
-    const el = (e.currentTarget as HTMLElement).querySelector('[data-swipe-card]') as HTMLElement
-    if (el) el.style.transform = ''
-    touchRef.current = null
-
-    if (doc.status !== DocumentStatus.NEED_SIGN) return
-    if (dx > 80) {
-      navigate(`/documents/${doc.id}/sign?mode=sign`)
-    } else if (dx < -80) {
-      toast('Отклонение (демо)', 'info')
-    }
   }
 
   const renderDocCard = (doc: DocRecord) => {
     const isSelectable = SELECTABLE_STATUSES.has(doc.status)
     const isSelected = selectedIds.has(doc.id)
-    const canSwipe = !selectionMode && doc.status === DocumentStatus.NEED_SIGN
 
     return (
-      <div
+      <Card
         key={doc.id}
-        className="relative overflow-hidden rounded-2xl"
-        onTouchStart={e => onTouchStart(doc.id, e)}
-        onTouchMove={e => onTouchMove(doc.id, e)}
-        onTouchEnd={e => onTouchEnd(doc, e)}
-      >
-        {/* Swipe backgrounds */}
-        {canSwipe && (
-          <>
-            <div className="absolute inset-0 bg-green-500 flex items-center px-6">
-              <Check className="h-6 w-6 text-white" />
-              <span className="text-white text-sm font-semibold ml-2">Подписать</span>
-            </div>
-            <div className="absolute inset-0 bg-red-500 flex items-center justify-end px-6">
-              <span className="text-white text-sm font-semibold mr-2">Отклонить</span>
-              <XCircle className="h-6 w-6 text-white" />
-            </div>
-          </>
+        onClick={() => {
+          if (selectionMode) {
+            if (isSelectable) toggleSelection(doc.id)
+            return
+          }
+          navigate(`/documents/${doc.id}`)
+        }}
+        className={cn(
+          'flex items-center gap-3 !p-4',
+          selectionMode && isSelected && 'ring-2 ring-brand-500 bg-brand-50/30',
+          selectionMode && !isSelectable && 'opacity-50',
         )}
-        <Card
-          data-swipe-card
-          onClick={() => {
-            if (selectionMode) {
-              if (isSelectable) toggleSelection(doc.id)
-            } else {
-              navigate(`/documents/${doc.id}`)
-            }
-          }}
-          className={cn(
-            'relative z-10 flex items-center gap-3 !p-4 transition-transform',
-            selectionMode && isSelected && 'ring-2 ring-brand-500 bg-brand-50/30',
-            selectionMode && !isSelectable && 'opacity-50',
-          )}
-        >
-          {selectionMode && (
-            <div className="shrink-0">
-              {isSelectable ? (
-                isSelected ? <CheckSquare className="h-6 w-6 text-brand-600" /> : <Square className="h-6 w-6 text-gray-300" />
-              ) : (
-                <div className="h-6 w-6" />
-              )}
-            </div>
-          )}
-          <div className={cn('w-12 h-12 rounded-2xl flex items-center justify-center shrink-0', STATUS_COLORS[doc.status].bg)}>
-            <FileText className={cn('h-6 w-6', STATUS_COLORS[doc.status].text)} />
+      >
+        {selectionMode && (
+          <div className="shrink-0">
+            {isSelectable ? (
+              isSelected ? <CheckSquare className="h-6 w-6 text-brand-600" /> : <Square className="h-6 w-6 text-gray-300" />
+            ) : (
+              <div className="h-6 w-6" />
+            )}
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">{doc.number}</p>
-              <Badge variant={badgeVariant[doc.status]} className="shrink-0">{STATUS_LABELS[doc.status]}</Badge>
-            </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 truncate mt-0.5">{doc.sender.name} → {doc.receiver.name}</p>
-            <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{DOC_TYPE_LABELS[doc.type]} · {formatDate(doc.updatedAt)}</p>
+        )}
+        <div className={cn('w-12 h-12 rounded-2xl flex items-center justify-center shrink-0', STATUS_COLORS[doc.status].bg)}>
+          <FileText className={cn('h-6 w-6', STATUS_COLORS[doc.status].text)} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">{doc.number}</p>
+            <Badge variant={badgeVariant[doc.status]} className="shrink-0">{STATUS_LABELS[doc.status]}</Badge>
           </div>
-          {!selectionMode && <ChevronRight className="h-5 w-5 text-gray-300 shrink-0" />}
-        </Card>
-      </div>
+          <p className="text-sm text-gray-500 dark:text-gray-400 truncate mt-0.5">{doc.sender.name} → {doc.receiver.name}</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{DOC_TYPE_LABELS[doc.type]} · {formatDate(doc.updatedAt)}</p>
+        </div>
+        {!selectionMode && <ChevronRight className="h-5 w-5 text-gray-300 shrink-0" />}
+      </Card>
     )
   }
 
@@ -344,12 +310,11 @@ export default function DocumentListPage() {
   }
 
   if (error) {
-    return <ErrorState title="Не удалось загрузить" description="Проверьте подключение и попробуйте снова" onRetry={load} />
+    return <ErrorState title="Не удалось загрузить" description="Проверьте подключение и попробуйте снова" onRetry={reload} />
   }
 
   return (
     <div className={cn('p-4 space-y-3', selectionMode && selectedIds.size > 0 && 'pb-32')}>
-      {/* Search + Filters + Select button */}
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
@@ -365,7 +330,7 @@ export default function DocumentListPage() {
         {!selectionMode ? (
           <>
             <button
-              onClick={() => setFiltersOpen(o => !o)}
+              onClick={() => setFiltersOpen(open => !open)}
               className={cn(
                 'flex items-center gap-1.5 px-4 rounded-xl border font-medium text-sm whitespace-nowrap min-h-[44px] transition-colors shrink-0',
                 filtersOpen || activeFilterCount > 0
@@ -393,7 +358,6 @@ export default function DocumentListPage() {
         )}
       </div>
 
-      {/* Select all / deselect toggle in selection mode */}
       {selectionMode && selectableDocs.length > 0 && (
         <button
           onClick={toggleSelectAll}
@@ -413,7 +377,6 @@ export default function DocumentListPage() {
         </button>
       )}
 
-      {/* Expandable filter panel */}
       <div
         className={cn(
           'overflow-hidden transition-all duration-300 ease-in-out',
@@ -421,7 +384,6 @@ export default function DocumentListPage() {
         )}
       >
         <div className="space-y-4 bg-gray-50 dark:bg-gray-800/50 rounded-2xl p-4 border border-gray-100 dark:border-gray-700/50">
-          {/* Date range */}
           <div>
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Период</p>
             <div className="flex gap-2 mb-2">
@@ -457,7 +419,6 @@ export default function DocumentListPage() {
             </div>
           </div>
 
-          {/* Sender filter */}
           {uniqueSenders.length > 0 && (
             <div>
               <p className="text-sm font-medium text-gray-700 mb-2">Отправитель</p>
@@ -490,11 +451,9 @@ export default function DocumentListPage() {
               </div>
             </div>
           )}
-
         </div>
       </div>
 
-      {/* Active filter chips */}
       {activeFilterChips.length > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
           {activeFilterChips.map(chip => (
@@ -516,95 +475,44 @@ export default function DocumentListPage() {
         </div>
       )}
 
-      {/* Status filter chips */}
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-hide">
-        {statusFilters.map(f => (
+        {statusFilters.map(filter => (
           <button
-            key={f.value}
-            onClick={() => setStatusFilter(f.value)}
+            key={filter.value}
+            onClick={() => setStatusFilter(filter.value)}
             className={cn(
               'px-5 py-2.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors shrink-0 min-h-[44px]',
-              statusFilter === f.value
+              statusFilter === filter.value
                 ? 'bg-brand-600 text-white shadow-sm'
                 : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:bg-gray-200 dark:active:bg-gray-700',
             )}
           >
-            {f.label}
+            {filter.label}
           </button>
         ))}
       </div>
 
-      {/* Trip grouping toggle */}
-      {!selectionMode && trips.length > 0 && (
-        <button
-          onClick={() => setGroupByTrip(g => !g)}
-          className={cn(
-            'flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-colors',
-            groupByTrip ? 'bg-brand-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 active:bg-gray-200 dark:active:bg-gray-700',
-          )}
-        >
-          <Truck className="h-4 w-4" />
-          По рейсам
-        </button>
-      )}
-
-      {/* List */}
       {filtered.length === 0 ? (
         <EmptyState icon={FileText} title="Нет документов" description="Документы появятся здесь, когда будут отправлены" />
-      ) : groupByTrip ? (
-        // Grouped by trip
-        <div className="space-y-4">
-          {(() => {
-            const groups: { trip: Trip | null; docs: DocRecord[] }[] = []
-            const tripMap = new Map<string, DocRecord[]>()
-            const noTrip: DocRecord[] = []
-            for (const doc of filtered) {
-              if (doc.tripId) {
-                if (!tripMap.has(doc.tripId)) tripMap.set(doc.tripId, [])
-                tripMap.get(doc.tripId)!.push(doc)
-              } else {
-                noTrip.push(doc)
-              }
-            }
-            for (const [tripId, docs] of tripMap) {
-              const trip = trips.find(t => t.id === tripId) || null
-              groups.push({ trip, docs })
-            }
-            if (noTrip.length > 0) groups.push({ trip: null, docs: noTrip })
-
-            return groups.map((g, gi) => (
-              <div key={gi}>
-                <div className="flex items-center gap-2 mb-2 px-1">
-                  <Truck className="h-4 w-4 text-brand-600" />
-                  <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
-                    {g.trip ? `${g.trip.name} · ${g.trip.date} · ${g.trip.vehiclePlate}` : 'Без рейса'}
-                  </span>
-                  <span className="text-xs text-gray-400 ml-auto">{g.docs.length} док.</span>
-                </div>
-                <div className="space-y-2">
-                  {g.docs.map(doc => renderDocCard(doc))}
-                </div>
-              </div>
-            ))
-          })()}
-        </div>
       ) : (
         <div className="space-y-2">
-          {filtered.map(doc => renderDocCard(doc))}
+          {filtered.map(renderDocCard)}
         </div>
       )}
 
-      {/* Fixed bottom bar when items are selected */}
+      {nextCursor && <div ref={sentinelRef} className="h-4" />}
+
+      {loadingMore && (
+        <div className="space-y-2">
+          {[1, 2].map(item => <SkeletonCard key={item} />)}
+        </div>
+      )}
+
       {selectionMode && selectedIds.size > 0 && (
-        <div className="fixed left-0 right-0 bottom-20 px-4 pb-3 pt-3 bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl border-t border-gray-200/50 dark:border-gray-700/50 shadow-lg z-30">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">
-              Выбрано: <span className="font-semibold text-gray-900 dark:text-gray-100">{selectedIds.size}</span>
-            </p>
-            <Button size="sm" onClick={handleBulkSign}>
-              Подписать ({selectedIds.size})
-            </Button>
-          </div>
+        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-t border-gray-100 dark:border-gray-700/50 pb-safe">
+          <Button fullWidth size="lg" onClick={handleBulkSign}>
+            Подписать выбранные ({selectedIds.size})
+          </Button>
         </div>
       )}
     </div>

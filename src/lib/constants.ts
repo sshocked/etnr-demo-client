@@ -122,6 +122,7 @@ export interface FileAttachment {
   name: string
   size: number
   type: string
+  downloadUrl?: string
 }
 
 export interface Trip {

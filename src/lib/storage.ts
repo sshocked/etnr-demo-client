@@ -40,11 +40,17 @@ export interface AuthState {
 }
 
 export function getAuth(): AuthState {
-  return getItem<AuthState>(STORAGE_KEYS.AUTH) ?? { isAuthenticated: false, phone: null }
+  const auth = getItem<Partial<AuthState> & { access_token?: string }>(STORAGE_KEYS.AUTH) ?? {}
+
+  return {
+    isAuthenticated: Boolean(auth.access_token || auth.isAuthenticated),
+    phone: auth.phone ?? null,
+  }
 }
 
 export function setAuth(state: AuthState): void {
-  setItem(STORAGE_KEYS.AUTH, state)
+  const current = getItem<Record<string, unknown>>(STORAGE_KEYS.AUTH) ?? {}
+  setItem(STORAGE_KEYS.AUTH, { ...current, ...state })
 }
 
 export function clearAuth(): void {
