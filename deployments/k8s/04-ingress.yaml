@@ -8,6 +8,18 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
+    # Основной домен — поддомен demo
+    - host: demo.lasamb.tw1.ru
+      http:
+        paths:
+          - path: /()(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: etnr-demo-client
+                port:
+                  number: 80
+    # Старый путь /app/ на основном домене (совместимость)
     - host: lasamb.tw1.ru
       http:
         paths:
