@@ -20,10 +20,11 @@ export interface BillingStatusResponse {
 }
 
 export function mapBillingStatusToSubscription(
-  billing: BillingStatusResponse,
+  billing: BillingStatusResponse | null,
   companyName?: string,
   companyInn?: string,
 ): Subscription | null {
+  if (!billing) return null
   const currentPackage = billing.package
   if (!currentPackage || currentPackage.status === 'none') {
     return null

@@ -110,7 +110,7 @@ export default function ProfilePage() {
       try {
         const [remoteUser, billingStatus, mcdResp] = await Promise.all([
           api.get<AuthMeResponse>('/auth/me'),
-          api.get<BillingStatusResponse>('/billing/status'),
+          api.get<BillingStatusResponse>('/billing/status').catch(() => null),
           api.get<{ mcds: McdApiItem[] }>('/mcd').catch(() => ({ mcds: [] })),
         ])
         if (cancelled) return
