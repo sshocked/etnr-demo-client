@@ -1,31 +1,44 @@
-# Task 02 — Auth pages (после готовности бэкенда Task 02)
+# Task 02 — Auth pages
 
-## Бэкенд endpoints (реализованы Claude)
-- `POST /auth/sms/request` body: `{phone: "+7XXXXXXXXXX"}` → `{requestId, resendAvailableAt}`
-- `POST /auth/sms/verify` body: `{requestId, code: "1234"}` → `{access_token, refresh_token, user}`
-- `POST /auth/refresh` body: `{refresh_token, device_id}` → `{access_token, refresh_token}`
-- `POST /auth/logout` header: Bearer token
-- `POST /auth/pin/enable` body: `{pin: "1234"}` (PIN хранится в localStorage, не отправляется)
-- `POST /auth/pin/disable`
+## Реальные endpoint пути (auth-service HTTP, не bff)
+Базовый URL: `import.meta.env.VITE_API_BASE_URL` (например `https://lasamb.tw1.ru`)
+
+- `POST /auth/otp/send` body: `{phone, deviceId, devicePlatform?, appVersion?}` → `{verificationId, expiresIn, resendAfter}`
+- `POST /auth/otp/verify` body: `{verificationId, code, deviceId}` → `{accessToken, expiresIn, refreshToken, refreshExpiresIn, user{id, phone}}`
+- `POST /auth/token/refresh` body: `{refreshToken, deviceId}` → `{accessToken, expiresIn, refreshToken, refreshExpiresIn}`
+- `POST /auth/logout` body: `{refreshToken, deviceId}` → 204
+
+## Хранение в localStorage (STORAGE_KEYS.AUTH = 'etrn_auth')
+```json
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "device_id": "...",  
+  "user_id": "..."
+}
+```
+`device_id` — генерировать один раз при первом запуске, хранить в STORAGE_KEYS.AUTH.
 
 ## Что изменить
 
-### src/pages/AuthPage.tsx (или Auth.tsx)
-Убрать `simulateDelay`, заменить mock на:
-```typescript
-// Запрос кода:
-const { requestId, resendAvailableAt } = await api.post('/auth/sms/request', { phone })
-// Верификация:
-const { access_token, refresh_token, user } = await api.post('/auth/sms/verify', { requestId, code })
-// Сохранить в localStorage STORAGE_KEYS.AUTH: { access_token, refresh_token, user_id: user.id }
-```
+### src/pages/AuthPage.tsx (или auth страница)
+1. Найти где сейчас вызывается `simulateDelay` и mock-данные для auth
+2. Заменить запрос кода: `api.post('/auth/otp/send', {phone, deviceId})`
+3. Заменить верификацию: `api.post('/auth/otp/verify', {verificationId: requestId, code, deviceId})`
+4. Сохранить токены в localStorage
 
 ### src/pages/PinSetupPage.tsx и PinLoginPage.tsx
-PIN остаётся в localStorage (`etrn_pin`), логика не меняется — это клиентская защита.
-После успешного PIN входа — загрузить профиль через `api.get('/users/me')`.
+PIN хранится только в localStorage — серверный эндпоинт НЕ нужен.
+После pin-логина — дополнительно вызвать `api.get('/auth/me')` для проверки сессии.
+
+## Примечание про api.ts
+В `api.ts` при вызове `/auth/token/refresh` используй:
+- body: `{refreshToken: tokens.refresh_token, deviceId: tokens.device_id}`
+- Ответ: поля `accessToken` и `refreshToken` (camelCase, не snake_case)
 
 ## Проверка
 1. `npm run dev`
 2. Открыть `http://localhost:5173/#/auth`
-3. Ввести телефон → увидеть в логах bff/auth-service SMS-код (stdout)
-4. Ввести код → попасть на /dashboard
+3. Ввести телефон → должен уйти POST /auth/otp/send в сеть (DevTools Network)
+4. SMS-код виден в логах auth-service: `kubectl logs -n auth-service deploy/authserver | grep "OTP\|code\|SMS"`
+5. Ввести код → получить JWT → SPA переходит на /dashboard
