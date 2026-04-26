@@ -44,7 +44,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VITE_API_BASE_URL=https://lasamb.tw1.ru
+            VITE_API_BASE_URL=http://lasamb.tw1.ru
 
   deploy:
     needs: build-and-push
