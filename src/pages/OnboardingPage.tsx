@@ -136,13 +136,13 @@ export default function OnboardingPage() {
     setSubmitError('')
 
     try {
-      await api.put('/auth/profile', {
+      await api.put('/profile', {
         name,
         company,
         inn,
         role: existingUser?.role,
       })
-      await api.post('/auth/onboarding/complete')
+      await api.post('/profile/onboarding/complete')
 
       const nextUser: StoredUserProfile = {
         ...(existingUser ?? {

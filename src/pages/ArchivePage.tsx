@@ -33,7 +33,7 @@ export default function ArchivePage() {
           limit: 100,
         })
         if (cancelled) return
-        setDocs((response.items ?? []).map(normalizeListDocument))
+        setDocs((response.documents ?? []).map(normalizeListDocument))
       } finally {
         if (!cancelled) setLoading(false)
       }

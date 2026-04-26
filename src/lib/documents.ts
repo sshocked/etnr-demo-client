@@ -18,7 +18,7 @@ export interface DocumentsListItemApi {
 }
 
 export interface DocumentsListResponse {
-  items: DocumentsListItemApi[]
+  documents: DocumentsListItemApi[]
   nextCursor?: string | null
   totals?: Partial<Record<DocumentStatus, number>> | null
 }

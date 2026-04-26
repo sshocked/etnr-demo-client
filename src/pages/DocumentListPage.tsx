@@ -148,7 +148,7 @@ export default function DocumentListPage() {
 
       if (requestIdRef.current !== currentRequestId) return
 
-      const items = (response.items ?? []).map(normalizeListDocument)
+      const items = (response.documents ?? []).map(normalizeListDocument)
       setDocs(prev => {
         if (reset) return items
 

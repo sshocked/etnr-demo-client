@@ -22,9 +22,9 @@ interface AuthMeResponse {
 interface McdApiItem {
   id: string
   status?: string
-  principalName?: string
+  principal?: string
   principalInn?: string
-  validTo?: string | null
+  validUntil?: string | null
 }
 
 export default function DashboardPage() {
@@ -42,7 +42,7 @@ export default function DashboardPage() {
         const [countsResponse, userResponse, mcdResponse] = await Promise.allSettled([
           api.get<DocumentCountsApi>('/documents/counts'),
           api.get<AuthMeResponse>('/auth/me'),
-          api.get<{ items: McdApiItem[] }>('/mcd'),
+          api.get<{ mcds: McdApiItem[] }>('/mcd'),
         ])
 
         if (cancelled) return
@@ -54,7 +54,7 @@ export default function DashboardPage() {
           setUserName(userResponse.value.name ?? '')
         }
         if (mcdResponse.status === 'fulfilled') {
-          setMcdItems(mcdResponse.value.items ?? [])
+          setMcdItems(mcdResponse.value.mcds ?? [])
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -82,18 +82,18 @@ export default function DashboardPage() {
     }
 
     const expiringMcds = mcdItems.filter(mcd => {
-      if (!mcd.validTo || mcd.status !== 'linked') return false
-      const daysLeft = Math.ceil((new Date(mcd.validTo).getTime() - now.getTime()) / 86400000)
+      if (!mcd.validUntil || mcd.status !== 'linked') return false
+      const daysLeft = Math.ceil((new Date(mcd.validUntil).getTime() - now.getTime()) / 86400000)
       return daysLeft <= 30
     })
 
     if (expiringMcds.length > 0) {
       const mcd = expiringMcds[0]
-      const daysLeft = Math.ceil((new Date(mcd.validTo!).getTime() - now.getTime()) / 86400000)
+      const daysLeft = Math.ceil((new Date(mcd.validUntil!).getTime() - now.getTime()) / 86400000)
       if (daysLeft <= 0) {
-        result.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: `МЧД от ${mcd.principalName ?? 'контрагента'} истекла`, action: '/profile' })
+        result.push({ icon: Shield, color: 'text-red-600', bg: 'bg-red-50', text: `МЧД от ${mcd.principal ?? 'контрагента'} истекла`, action: '/profile' })
       } else {
-        result.push({ icon: Shield, color: 'text-orange-600', bg: 'bg-orange-50', text: `МЧД от ${mcd.principalName ?? 'контрагента'} истекает через ${daysLeft} дн.`, action: '/profile' })
+        result.push({ icon: Shield, color: 'text-orange-600', bg: 'bg-orange-50', text: `МЧД от ${mcd.principal ?? 'контрагента'} истекает через ${daysLeft} дн.`, action: '/profile' })
       }
     }
 

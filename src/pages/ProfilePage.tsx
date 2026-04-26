@@ -205,7 +205,7 @@ export default function ProfilePage() {
     setProfileError('')
 
     try {
-      await api.put('/auth/profile', {
+      await api.put('/profile', {
         name: form.name.trim(),
         company: form.company.trim(),
         inn: form.inn.trim(),
