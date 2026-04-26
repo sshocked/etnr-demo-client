@@ -19,8 +19,10 @@ interface InviteCreateResponse {
 
 interface InvitePreviewResponse {
   valid: boolean
-  inviterName?: string
+  inviter?: { name?: string; company?: string }
+  recipient?: { name?: string }
   expiresAt?: string
+  reason?: string
 }
 
 export default function McdInvitePage() {
@@ -93,7 +95,7 @@ export default function McdInvitePage() {
     try {
       const result = await api.post<InviteCreateResponse>('/mcd/invite', {
         recipientName: recipientName.trim(),
-        contact: recipientContact.trim(),
+        recipientContact: recipientContact.trim(),
         channel,
       })
 
@@ -186,7 +188,7 @@ export default function McdInvitePage() {
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-gray-500 dark:text-gray-400">Пригласил</span>
                     <span className="font-medium text-right text-gray-900 dark:text-gray-100">
-                      {preview.inviterName || '—'}
+                      {preview.inviter?.name || '—'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">

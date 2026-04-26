@@ -278,10 +278,43 @@ function del<T>(path: string): Promise<T> {
   return request<T>('DELETE', path)
 }
 
+async function postForm<T>(path: string, formData: FormData, retryAfterRefresh = true): Promise<T> {
+  const tokens = getTokens()
+  const headers = new Headers()
+  if (tokens?.access_token) {
+    headers.set('Authorization', `Bearer ${tokens.access_token}`)
+  }
+
+  let response: Response
+  try {
+    response = await fetch(buildUrl(path), { method: 'POST', headers, body: formData })
+  } catch (cause) {
+    const error = new Error('Network request failed') as ApiError
+    error.status = 0
+    error.message = cause instanceof Error && cause.message ? cause.message : 'Network request failed'
+    throw error
+  }
+
+  if (response.status === 401 && retryAfterRefresh) {
+    const refreshed = await refreshTokens()
+    if (!refreshed) {
+      const error = new Error('Unauthorized') as ApiError
+      error.status = 401
+      error.message = 'Unauthorized'
+      throw error
+    }
+    return postForm<T>(path, formData, false)
+  }
+
+  if (!response.ok) throw await createApiError(response)
+  return parseBody<T>(response)
+}
+
 export const api = {
   get,
   getBlob: requestBlob,
   post,
+  postForm,
   put,
   delete: del,
 }

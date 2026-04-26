@@ -11,19 +11,43 @@ import { api, type ApiError } from '../lib/api'
 interface McdItem {
   id: string
   status: string
-  principalName?: string | null
+  principal?: string | null
   principalInn?: string | null
-  representativeName?: string | null
-  representativeInn?: string | null
   validFrom?: string | null
-  validTo?: string | null
+  validUntil?: string | null
   number?: string | null
-  powers?: Array<{ code?: string | null; name?: string | null } | string>
+  powers?: string[]
+}
+
+interface ParsedMcdPrincipal {
+  name?: string | null
+  inn?: string | null
+  ogrn?: string | null
+  kpp?: string | null
+}
+
+interface ParsedMcdTrustedPerson {
+  fullName?: string | null
+}
+
+interface ParsedMcdPower {
+  code?: string | null
+  name?: string | null
+}
+
+interface ParsedMcd {
+  number?: string | null
+  principal?: ParsedMcdPrincipal | null
+  trustedPerson?: ParsedMcdTrustedPerson | null
+  validFrom?: string | null
+  validUntil?: string | null
+  registryGuid?: string | null
+  powers?: ParsedMcdPower[]
 }
 
 interface ParsedMcdDraft {
   draftId: string
-  parsed: Record<string, unknown>
+  parsed: ParsedMcd
 }
 
 const statusVariantMap: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
@@ -32,11 +56,13 @@ const statusVariantMap: Record<string, 'success' | 'warning' | 'error' | 'defaul
   attached: 'success',
   valid: 'success',
   pending: 'warning',
+  pending_verification: 'warning',
   processing: 'warning',
   draft: 'warning',
   expired: 'error',
   invalid: 'error',
   revoked: 'error',
+  insufficient: 'warning',
 }
 
 const statusLabelMap: Record<string, string> = {
@@ -45,11 +71,13 @@ const statusLabelMap: Record<string, string> = {
   attached: 'Привязана',
   valid: 'Действует',
   pending: 'Проверяется',
+  pending_verification: 'Проверяется',
   processing: 'Обновляется',
   draft: 'Черновик',
   expired: 'Истекла',
   invalid: 'Недействительна',
   revoked: 'Отозвана',
+  insufficient: 'Недостаточно полномочий',
 }
 
 function getStatusVariant(status: string): 'success' | 'warning' | 'error' | 'default' {
@@ -60,41 +88,6 @@ function getStatusLabel(status: string): string {
   return statusLabelMap[status.toLowerCase()] ?? status
 }
 
-function getParsedString(source: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = source[key]
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  }
-  return null
-}
-
-function getParsedPowers(source: Record<string, unknown>): Array<{ code?: string; name?: string }> {
-  const raw = source.powers
-  if (!Array.isArray(raw)) return []
-
-  return raw.flatMap(item => {
-    if (typeof item === 'string') return [{ name: item }]
-    if (item && typeof item === 'object') {
-      const code = typeof item.code === 'string' ? item.code : undefined
-      const name = typeof item.name === 'string' ? item.name : undefined
-      if (code || name) return [{ code, name }]
-    }
-    return []
-  })
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  const chunkSize = 0x8000
-  let binary = ''
-
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize)
-    binary += String.fromCharCode(...chunk)
-  }
-
-  return btoa(binary)
-}
 
 export default function McdLandingPage() {
   const navigate = useNavigate()
@@ -117,17 +110,16 @@ export default function McdLandingPage() {
 
   const parsedView = useMemo(() => {
     if (!parsedDraft) return null
-
-    const parsed = parsedDraft.parsed
+    const p = parsedDraft.parsed
     return {
-      number: getParsedString(parsed, ['number', 'id']),
-      principalName: getParsedString(parsed, ['principalName', 'principal', 'principalFullName']),
-      principalInn: getParsedString(parsed, ['principalInn']),
-      representativeName: getParsedString(parsed, ['representativeName', 'trustedPerson']),
-      representativeInn: getParsedString(parsed, ['representativeInn']),
-      validFrom: getParsedString(parsed, ['validFrom']),
-      validTo: getParsedString(parsed, ['validTo', 'validUntil']),
-      powers: getParsedPowers(parsed),
+      number: p.number ?? null,
+      principalName: p.principal?.name ?? null,
+      principalInn: p.principal?.inn ?? null,
+      representativeName: p.trustedPerson?.fullName ?? null,
+      representativeInn: null,
+      validFrom: p.validFrom ?? null,
+      validTo: p.validUntil ?? null,
+      powers: (p.powers ?? []).map(pw => ({ code: pw.code ?? undefined, name: pw.name ?? undefined })),
     }
   }, [parsedDraft])
 
@@ -136,8 +128,8 @@ export default function McdLandingPage() {
     setError('')
 
     try {
-      const data = await api.get<{ items: McdItem[] }>('/mcd')
-      setItems(data.items ?? [])
+      const data = await api.get<{ mcds: McdItem[] }>('/mcd')
+      setItems(data.mcds ?? [])
     } catch (rawError) {
       const apiError = rawError as ApiError
       setError(apiError.message || 'Не удалось загрузить список МЧД')
@@ -207,9 +199,9 @@ export default function McdLandingPage() {
     setParsedDraft(null)
 
     try {
-      const buffer = await file.arrayBuffer()
-      const xmlData = arrayBufferToBase64(buffer)
-      const draft = await api.post<ParsedMcdDraft>('/mcd/parse', { xmlData })
+      const formData = new FormData()
+      formData.append('file', file)
+      const draft = await api.postForm<ParsedMcdDraft>('/mcd/parse', formData)
       setParsedDraft(draft)
       toast('Файл распознан', 'success')
     } catch (rawError) {
@@ -453,12 +445,10 @@ export default function McdLandingPage() {
                     </div>
 
                     <div className="grid gap-2 sm:grid-cols-2 text-sm">
-                      <FieldRow label="Доверитель" value={item.principalName} />
+                      <FieldRow label="Доверитель" value={item.principal} />
                       <FieldRow label="ИНН доверителя" value={item.principalInn} />
-                      <FieldRow label="Представитель" value={item.representativeName} />
-                      <FieldRow label="ИНН представителя" value={item.representativeInn} />
                       <FieldRow label="Действует с" value={item.validFrom ? formatDate(item.validFrom) : null} />
-                      <FieldRow label="Действует до" value={item.validTo ? formatDate(item.validTo) : null} />
+                      <FieldRow label="Действует до" value={item.validUntil ? formatDate(item.validUntil) : null} />
                     </div>
                   </div>
 
@@ -486,12 +476,12 @@ export default function McdLandingPage() {
                   </div>
                 </div>
 
-                {(item.validFrom || item.validTo) && (
+                {(item.validFrom || item.validUntil) && (
                   <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700/50 text-xs text-gray-500 dark:text-gray-400">
-                    {item.validFrom && item.validTo
-                      ? `Период действия: ${formatDateTime(item.validFrom)} - ${formatDateTime(item.validTo)}`
-                      : item.validTo
-                        ? `Действует до ${formatDateTime(item.validTo)}`
+                    {item.validFrom && item.validUntil
+                      ? `Период действия: ${formatDateTime(item.validFrom)} - ${formatDateTime(item.validUntil)}`
+                      : item.validUntil
+                        ? `Действует до ${formatDateTime(item.validUntil)}`
                         : `Действует с ${formatDateTime(item.validFrom as string)}`}
                   </div>
                 )}
