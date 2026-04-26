@@ -15,7 +15,7 @@ export default function PinSetupPage() {
   const [step, setStep] = useState<Step>('create')
   const [pin, setPin] = useState('')
   const [confirmPin, setConfirmPin] = useState('')
-  const [pinLength, setPinLength] = useState(4)
+  const pinLength = 4
   const [error, setError] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -27,7 +27,7 @@ export default function PinSetupPage() {
   const setActivePin = step === 'create' ? setPin : setConfirmPin
 
   const handleDigit = (digit: string) => {
-    if (activePin.length >= 6) return
+    if (activePin.length >= pinLength) return
     const next = activePin + digit
     setActivePin(next)
     setError('')
@@ -67,12 +67,6 @@ export default function PinSetupPage() {
     }
   }
 
-  const handlePinLengthChange = (len: number) => {
-    setPinLength(len)
-    setPin('')
-    setConfirmPin('')
-  }
-
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900 flex flex-col">
       {step !== 'biometrics' && (
@@ -101,25 +95,7 @@ export default function PinSetupPage() {
               <Lock className="h-8 w-8 text-brand-600" />
             </div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Создайте ПИН-код</h1>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">Для быстрого входа в приложение</p>
-
-            {/* Pin length selector */}
-            <div className="flex gap-2 mb-8">
-              {[4, 5, 6].map(len => (
-                <button
-                  key={len}
-                  onClick={() => handlePinLengthChange(len)}
-                  className={cn(
-                    'px-4 py-1.5 rounded-full text-sm font-medium transition-colors',
-                    pinLength === len
-                      ? 'bg-brand-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200',
-                  )}
-                >
-                  {len} цифр
-                </button>
-              ))}
-            </div>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-8">Для быстрого входа в приложение</p>
 
             <PinDots length={pinLength} filled={pin.length} error={!!error} />
             {error && <p className="text-sm text-red-500 mt-3">{error}</p>}
