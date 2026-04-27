@@ -6,7 +6,6 @@ import Input from '../components/ui/Input'
 import { setItem, getItem } from '../lib/storage'
 import { STORAGE_KEYS, type UserProfile } from '../lib/constants'
 import { api, type ApiError } from '../lib/api'
-import { defaultUser } from '../data/mockUser'
 
 const MAX_CODE_ATTEMPTS = 5
 const MAX_RESEND_ATTEMPTS = 3
