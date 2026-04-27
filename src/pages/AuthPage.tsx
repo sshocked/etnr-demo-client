@@ -13,15 +13,15 @@ const MAX_RESEND_ATTEMPTS = 3
 
 interface SendOtpResponse {
   verificationId: string
-  expiresIn: number
-  resendAfter: number
+  expiresInSec: number
+  resendAfterSec: number
 }
 
 interface VerifyOtpResponse {
   accessToken: string
-  expiresIn: number
+  expiresInSec: number
   refreshToken: string
-  refreshExpiresIn: number
+  refreshExpiresInSec: number
   user: {
     id: string
     phone: string
@@ -170,7 +170,7 @@ export default function AuthPage() {
       setRequestId(response.verificationId)
       setLoading(false)
       setPhase('code')
-      setTimer(response.resendAfter)
+      setTimer(response.resendAfterSec)
       setTimeout(() => codeInputRef.current?.focus(), 100)
     } catch (error) {
       setLoading(false)
@@ -203,7 +203,7 @@ export default function AuthPage() {
       })
 
       setRequestId(response.verificationId)
-      setTimer(response.resendAfter)
+      setTimer(response.resendAfterSec)
     } catch (error) {
       setCodeError(getApiErrorMessage(error, 'Не удалось отправить код повторно'))
     } finally {
