@@ -245,10 +245,14 @@ export default function AuthPage() {
 
       const existingUser = getItem<UserProfile>(STORAGE_KEYS.USER)
       const nextUser: UserProfile = {
-        ...defaultUser,
-        ...existingUser,
         id: response.user.id,
         phone: response.user.phone,
+        email: existingUser?.email ?? '',
+        name: existingUser?.name ?? '',
+        company: existingUser?.company ?? '',
+        inn: existingUser?.inn ?? '',
+        kind: existingUser?.kind ?? 'fl',
+        ogrn: existingUser?.ogrn,
         onboardingCompleted: existingUser?.onboardingCompleted ?? false,
       }
       setItem(STORAGE_KEYS.USER, nextUser)

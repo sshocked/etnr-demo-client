@@ -4,13 +4,9 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
   use: {
-    baseURL: 'https://lasamb.tw1.ru',
-    headless: false,
+    baseURL: 'http://lasamb.tw1.ru',
+    headless: true,
     viewport: { width: 390, height: 844 },
-    ignoreHTTPSErrors: true,
-    launchOptions: {
-      args: ['--host-resolver-rules=MAP lasamb.tw1.ru 85.239.53.73'],
-    },
   },
   projects: [
     {
