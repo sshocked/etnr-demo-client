@@ -71,3 +71,13 @@ export default defineConfig([
   },
 ])
 ```
+
+
+## CI/CD
+
+Автодеплой включён. При push в `main` или `master` запускается GitHub Actions workflow:
+- Сборка Docker-образа → публикация в GHCR
+- Деплой в Kubernetes (namespace: etnr-client-service)
+- При ошибке — комментарий к коммиту
+
+[GitHub Actions](https://github.com/sshocked/etnr-demo-client/actions)
